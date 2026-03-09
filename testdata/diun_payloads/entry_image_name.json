@@ -1,0 +1,9 @@
+{
+  "entry": {
+    "image": {
+      "name": "ghcr.io/acme/service-a:2.1.0"
+    },
+    "tag": "2.1.0",
+    "digest": "sha256:aaaabbbb"
+  }
+}

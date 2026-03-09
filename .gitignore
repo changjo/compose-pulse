@@ -1,0 +1,39 @@
+bin/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+.env
+.envrc
+
+# local/dev runtime artifacts
+.local/
+data/
+.direnv/
+docker-compose.custom.yml
+
+# env and secret files
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+id_rsa
+id_ed25519
+secret.*
+.secrets/
+
+# misc local artifacts
+*.log
+*.pid
+*.tmp
+*.bak
+*.orig
+.coverage
+coverage.out
+coverage/
+.idea/
+.vscode/
+.DS_Store

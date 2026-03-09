@@ -1,0 +1,4 @@
+{
+  "repository": "registry.example.com/ops/worker@sha256:eeeeffff",
+  "tag": "ignored-tag"
+}

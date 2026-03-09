@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#1f4a73" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="ComposePulse" />
+    <title>ComposePulse - Login</title>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/app-icon-32.png" />
+    <link rel="icon" type="image/svg+xml" href="/icons/app-icon.svg" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/icons/app-icon-180.png" />
+    <link rel="apple-touch-icon-precomposed" sizes="180x180" href="/icons/app-icon-180.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="login-page">
+    <main class="login-shell">
+      <section class="login-card">
+        <div class="brand-lockup login-brand">
+          <img class="brand-icon" src="/icons/app-icon-64.png" alt="" width="44" height="44" />
+          <div class="brand-copy">
+            <h1 data-i18n="login.title">ComposePulse</h1>
+            <p class="helper-text" data-i18n="login.subtitle">관리자 계정으로 로그인하세요.</p>
+          </div>
+        </div>
+
+        <label for="login-lang" data-i18n="label.language">언어</label>
+        <select id="login-lang">
+          <option value="ko">한국어</option>
+          <option value="en">English</option>
+        </select>
+
+        <label for="username">Username</label>
+        <input id="username" type="text" autocomplete="username" />
+
+        <label for="password" data-i18n="auth.password">Password</label>
+        <input id="password" type="password" autocomplete="current-password" />
+
+        <label class="remember-me">
+          <input id="remember-me" type="checkbox" checked />
+          <span data-i18n="auth.remember_me">자동 로그인</span>
+        </label>
+
+        <button id="login-btn" data-i18n="auth.login">Login</button>
+        <div id="login-error" class="error-text hidden"></div>
+      </section>
+    </main>
+
+    <script src="/login.js"></script>
+  </body>
+</html>

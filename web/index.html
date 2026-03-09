@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#1f4a73" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="ComposePulse" />
+    <title>ComposePulse</title>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/app-icon-32.png" />
+    <link rel="icon" type="image/svg+xml" href="/icons/app-icon.svg" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/icons/app-icon-180.png" />
+    <link rel="apple-touch-icon-precomposed" sizes="180x180" href="/icons/app-icon-180.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand-lockup topbar-brand">
+        <img class="brand-icon" src="/icons/app-icon-64.png" alt="" width="36" height="36" />
+        <h1 data-i18n="app.title">ComposePulse</h1>
+      </div>
+      <div class="auth-box">
+        <label id="lang-label" for="lang-select" data-i18n="label.language">언어</label>
+        <select id="lang-select">
+          <option value="ko">한국어</option>
+          <option value="en">English</option>
+        </select>
+        <button id="advanced-toggle" class="secondary" type="button" data-i18n="btn.advanced_off">고급 보기 OFF</button>
+        <span id="auth-state">admin</span>
+        <button id="logout-btn" class="secondary" data-i18n="auth.logout">Logout</button>
+      </div>
+    </header>
+
+    <div id="pull-refresh-indicator" class="pull-refresh-indicator hidden" aria-hidden="true">
+      <div id="pull-refresh-bubble" class="pull-refresh-bubble">
+        <svg class="pull-refresh-ring" viewBox="0 0 40 40" aria-hidden="true">
+          <circle class="pull-refresh-track" cx="20" cy="20" r="14"></circle>
+          <circle id="pull-refresh-progress" class="pull-refresh-progress" cx="20" cy="20" r="14"></circle>
+        </svg>
+      </div>
+    </div>
+
+    <section id="install-banner" class="install-banner hidden">
+      <button id="install-btn" class="secondary hidden" data-i18n="install.button">앱 설치</button>
+      <div id="install-help" class="helper-text"></div>
+    </section>
+
+    <main class="layout hidden">
+      <section class="panel metrics advanced-only hidden">
+        <h2 data-i18n="section.metrics">운영 지표 (24h)</h2>
+        <div class="metric-grid">
+          <div class="metric-card">
+            <div class="metric-label" data-i18n="metrics.failed">실패/차단 작업</div>
+            <div id="metric-failed" class="metric-value">-</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label" data-i18n="metrics.avg_duration">평균 작업 시간(초)</div>
+            <div id="metric-avg" class="metric-value">-</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label" data-i18n="metrics.webhook">Webhook 실패율</div>
+            <div id="metric-webhook" class="metric-value">-</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label" data-i18n="metrics.webhook_failed">Webhook 실패 건수</div>
+            <div id="metric-webhook-failed" class="metric-value">-</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label" data-i18n="metrics.login_failures">로그인 실패</div>
+            <div id="metric-login-failed" class="metric-value">-</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label" data-i18n="metrics.login_limited">로그인 제한</div>
+            <div id="metric-login-limited" class="metric-value">-</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label" data-i18n="metrics.dashboard_stream">Dashboard SSE (active/rejected)</div>
+            <div id="metric-dashboard-stream" class="metric-value">-</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label" data-i18n="metrics.push_delivery">Push sent/failed</div>
+            <div id="metric-push-delivery" class="metric-value">-</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2 data-i18n="section.register">컨테이너 등록</h2>
+        <form id="add-target-form" class="inline-form">
+          <select name="discover_item" id="discover-item-select" required>
+            <option value="" data-i18n="discover.loading">탐색 목록을 불러오는 중...</option>
+          </select>
+          <select name="image_repo" id="discover-image-select" required>
+            <option value="" data-i18n="discover.select_first">먼저 컨테이너를 선택하세요.</option>
+          </select>
+          <input name="cooldown_seconds" data-i18n-placeholder="target.cooldown.placeholder" placeholder="600" type="number" min="1" />
+          <button type="button" id="refresh-discover" class="secondary" data-i18n="btn.refresh_discover">목록 새로고침</button>
+          <button type="submit" data-i18n="btn.register">등록</button>
+        </form>
+        <div id="discover-meta" class="helper-text"></div>
+      </section>
+
+      <section class="panel" id="targets-panel">
+        <div class="panel-head">
+          <h2 data-i18n="section.targets">등록 컨테이너 목록</h2>
+          <button id="targets-collapse-btn" class="secondary collapse-toggle" type="button">목록 접기</button>
+        </div>
+        <div id="targets-content">
+          <div class="actions">
+            <button id="toggle-select-all" class="secondary" data-i18n="btn.toggle_select_all">전체 선택/해제</button>
+            <button id="run-update" data-i18n="btn.run_update">선택 업데이트 실행</button>
+            <button id="run-prune" class="danger" data-i18n="btn.run_prune">Dangling Image Prune</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th data-i18n="col.select">Select</th>
+                  <th data-i18n="col.id">ID</th>
+                  <th data-i18n="col.name">Name</th>
+                  <th data-i18n="col.compose_dir">Compose Dir</th>
+                  <th data-i18n="col.image_repo">Image Repo</th>
+                  <th data-i18n="col.auto">Auto</th>
+                  <th data-i18n="col.enabled">Enabled</th>
+                  <th data-i18n="col.cooldown">Cooldown(s)</th>
+                  <th data-i18n="col.last_success">Last Success</th>
+                  <th data-i18n="col.action">Action</th>
+                </tr>
+              </thead>
+              <tbody id="targets-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel advanced-only hidden" id="audit-panel">
+        <div class="panel-head">
+          <h2 data-i18n="section.audit">대상별 감사 요약</h2>
+          <button id="audit-collapse-btn" class="secondary collapse-toggle" type="button">목록 접기</button>
+        </div>
+        <div id="audit-content">
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th data-i18n="col.id">ID</th>
+                  <th data-i18n="col.name">Name</th>
+                  <th data-i18n="col.image_repo">Image Repo</th>
+                  <th data-i18n="col.total_runs">Total</th>
+                  <th data-i18n="col.success_runs">Success</th>
+                  <th data-i18n="col.failed_runs">Failed</th>
+                  <th data-i18n="col.blocked_runs">Blocked</th>
+                  <th data-i18n="col.avg_duration">Avg Duration</th>
+                  <th data-i18n="col.last_run">Last Run</th>
+                </tr>
+              </thead>
+              <tbody id="audit-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel advanced-only hidden">
+        <h2 data-i18n="section.diun_events">DIUN 최근 이벤트</h2>
+        <div id="webhook-config" class="helper-text" data-i18n="webhook.loading">Webhook 설정 정보를 불러오는 중...</div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th data-i18n="col.id">ID</th>
+                <th data-i18n="col.image_repo">Image Repo</th>
+                <th data-i18n="col.tag">Tag</th>
+                <th data-i18n="col.matched">Matched</th>
+                <th data-i18n="col.queued">Queued</th>
+                <th data-i18n="col.received_at">Received At</th>
+              </tr>
+            </thead>
+            <tbody id="events-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel advanced-only hidden">
+        <h2 data-i18n="section.diun_receipts">Webhook Receipts</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th data-i18n="col.id">ID</th>
+                <th data-i18n="col.status_code">Status</th>
+                <th data-i18n="col.reason_code">Reason</th>
+                <th data-i18n="col.job_id">Job ID</th>
+                <th data-i18n="col.received_at">Received At</th>
+              </tr>
+            </thead>
+            <tbody id="receipts-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel advanced-only hidden">
+        <h2 data-i18n="section.push">Push Notifications</h2>
+        <div id="push-status" class="helper-text" data-i18n="push.status_loading">Push 상태를 확인하는 중...</div>
+        <div class="actions">
+          <button id="push-enable" class="secondary" type="button" data-i18n="btn.push_enable">Push 활성화</button>
+          <button id="push-disable" class="secondary" type="button" data-i18n="btn.push_disable">Push 비활성화</button>
+          <button id="push-test" type="button" data-i18n="btn.push_test">Push 테스트</button>
+        </div>
+      </section>
+
+      <section class="panel advanced-only hidden">
+        <h2 data-i18n="section.jobs">작업 이력</h2>
+        <div class="actions">
+          <button id="jobs-export" class="secondary" data-i18n="btn.export_csv">CSV 내보내기</button>
+          <button id="jobs-delete-all" class="danger" data-i18n="btn.jobs_delete_all">작업 이력 전체 삭제</button>
+          <button id="jobs-more" class="secondary" data-i18n="btn.jobs_more">이전 작업 더 보기</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th data-i18n="col.id">ID</th>
+                <th data-i18n="col.type">Type</th>
+                <th data-i18n="col.trigger">Trigger</th>
+                <th data-i18n="col.status">Status</th>
+                <th data-i18n="col.targets">Targets</th>
+                <th data-i18n="col.duration">Duration</th>
+                <th data-i18n="col.error">Error</th>
+                <th data-i18n="col.created">Created</th>
+                <th data-i18n="col.action">Action</th>
+              </tr>
+            </thead>
+            <tbody id="jobs-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2 data-i18n="section.logs">실시간 로그</h2>
+        <div id="stream-meta" data-i18n="stream.click_job">작업을 클릭하면 로그가 표시됩니다.</div>
+        <pre id="log-box"></pre>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
