@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Run prepublish checks
+        run: ./scripts/prepublish_check.sh
+
+      - name: Run Dockerized Go tests
+        run: |
+          docker run --rm -v "$PWD":/src -w /src golang:1.22-alpine sh -lc \
+            'apk add --no-cache build-base >/dev/null && CGO_ENABLED=1 /usr/local/go/bin/go test ./...'

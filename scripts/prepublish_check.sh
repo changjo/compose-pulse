@@ -31,7 +31,7 @@ fi
 echo
 echo "[3/5] Git tracked sensitive files scan"
 if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  TRACKED="$(git ls-files .env '.env.*' '.local/*' 'data/*' '*.db' '*.db-shm' '*.db-wal' '*.sqlite' '*.sqlite3' '*.pem' '*.key' '*.crt' '*.p12' id_rsa id_ed25519 docker-compose.custom.yml || true)"
+  TRACKED="$(git ls-files -- .env '.env.*' '.local/*' 'data/*' '*.db' '*.db-shm' '*.db-wal' '*.sqlite' '*.sqlite3' '*.pem' '*.key' '*.crt' '*.p12' id_rsa id_ed25519 docker-compose.custom.yml | grep -v '^\.env\.example$' || true)"
   if [ -n "$TRACKED" ]; then
     echo "Tracked sensitive files detected:"
     echo "$TRACKED"

@@ -2,7 +2,7 @@
 
 ComposePulse is a self-hosted web UI for safely updating selected Docker Compose apps on a NAS or Docker host.
 
-It is built for setups where compose projects live under `/share/Container/<name>` and you want a narrow, auditable workflow instead of a general-purpose container manager.
+It is built for setups where compose projects live under a single configured root path and you want a narrow, auditable workflow instead of a general-purpose container manager.
 
 The current public release scope is desktop-first. Mobile browsers and installed PWA mode are best-effort conveniences, not part of the current release gate, so use a desktop browser for first setup and important operational changes.
 
@@ -50,7 +50,7 @@ ComposePulse is the middle ground:
 ## How It Works
 
 1. ComposePulse runs as its own container.
-2. It mounts `/share/Container` as read-only and `/data` as writable app storage.
+2. It mounts one compose-project root as read-only and `/data` as writable app storage.
 3. You register only the compose directories you want ComposePulse to manage.
 4. For each target, ComposePulse stores one or more image repositories to match against DIUN events.
 5. Updates run through a single in-process queue so jobs do not overlap.
@@ -68,11 +68,11 @@ Allowed runtime commands are intentionally limited to:
 You need:
 
 - Docker Engine with the Docker Compose plugin available inside the app container
-- Your managed compose projects stored under `/share/Container/<name>`
+- Your managed compose projects stored under one configured root path
 - A writable directory for ComposePulse data
 - [DIUN](https://crazymax.dev/diun/) if you want automatic updates; manual-only operation does not require it
 
-Typical target layout:
+Example target layout:
 
 ```text
 /share/Container/
@@ -82,7 +82,7 @@ Typical target layout:
     compose.yaml
 ```
 
-ComposePulse only accepts one-level directories under `/share/Container`, for example:
+ComposePulse only accepts one-level directories under the configured root. With the bundled compose example, for instance:
 
 - allowed: `/share/Container/app1`
 - rejected: `/share/Container`
@@ -138,7 +138,9 @@ Default URL:
 
 - `http://<HOST-IP>:8087/login`
 
-If you need local networking, reverse proxy, or NAS-specific path tweaks, keep those changes in your own local override file such as `docker-compose.custom.yml`. Do not commit personal override files to the public repository.
+The bundled [`docker-compose.yml`](./docker-compose.yml) builds the image locally from this checkout. If you prefer a published image from Docker Hub, use the release flow described in [Releases and Docker Images](#releases-and-docker-images).
+
+If you are not using `/share/Container`, override both the read-only bind mount and `CONTAINER_ROOT` in your own local override file such as `docker-compose.custom.yml`. Do not commit personal override files to the public repository.
 
 ### 4. Log In
 
@@ -206,7 +208,7 @@ Notes:
 - Dashboard APIs require a login session cookie
 - Login requests are rate-limited by IP and username
 - DIUN webhooks require `X-DIUN-SECRET`
-- Compose directories are restricted to `/share/Container/<name>`
+- Compose directories are restricted to one level under the configured `CONTAINER_ROOT`
 - App data stays under `/data`
 - Runtime commands are allowlisted and fixed
 
@@ -306,6 +308,7 @@ Required:
 
 Frequently adjusted optional values:
 
+- `CONTAINER_ROOT` (when overridden in your local compose file)
 - `WEBHOOK_CONFIG_SHOW_SECRET`
 - `COOLDOWN_SECONDS`
 - `PULL_RETRY_MAX_ATTEMPTS`
@@ -400,6 +403,65 @@ docker run --rm -v "$PWD":/src -w /src golang:1.22-alpine sh -lc 'apk add --no-c
 Manual QA report template:
 
 - `docs/QA_REPORT_TEMPLATE.md`
+
+## Releases and Docker Images
+
+GitHub Actions handles both verification and image publishing:
+
+- `.github/workflows/ci.yml` runs on `main` pushes and pull requests
+- `.github/workflows/release.yml` runs on tag pushes that match `v*`
+- Release builds publish multi-arch Docker Hub images for `linux/amd64` and `linux/arm64`
+- A GitHub Release is created automatically from the pushed tag
+
+Configure these repository settings before the first release tag:
+
+- Required repository variable: `DOCKERHUB_USERNAME`
+- Required repository secret: `DOCKERHUB_TOKEN`
+- Optional repository variable: `DOCKERHUB_NAMESPACE`
+- Optional repository variable: `DOCKERHUB_IMAGE_NAME`
+
+Defaults:
+
+- `DOCKERHUB_NAMESPACE` defaults to `DOCKERHUB_USERNAME`
+- `DOCKERHUB_IMAGE_NAME` defaults to the GitHub repository name
+
+Tag behavior:
+
+- Stable tag `v0.1.0` publishes `docker.io/<namespace>/<image>:v0.1.0`
+- Stable tag `v0.1.0` also publishes `docker.io/<namespace>/<image>:v0.1`
+- Stable tag `v0.1.0` also updates `docker.io/<namespace>/<image>:latest`
+- Prerelease tag `v0.2.0-rc1` publishes only `docker.io/<namespace>/<image>:v0.2.0-rc1`
+
+Create a release:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+If you want to deploy from Docker Hub instead of building locally, use your own compose file or adapt the bundled one so the service points at a published image tag:
+
+```yaml
+services:
+  composepulse:
+    image: docker.io/<namespace>/<image>:v0.1.0
+    container_name: composepulse
+    user: "0:0"
+    environment:
+      ADMIN_USERNAME: "${ADMIN_USERNAME}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD}"
+      DIUN_WEBHOOK_SECRET: "${DIUN_WEBHOOK_SECRET:?DIUN_WEBHOOK_SECRET is required}"
+      DB_PATH: /data/app.db
+      CONTAINER_ROOT: /share/Container
+      PORT: "8087"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /share/Container:/share/Container:ro
+      - ${APP_DATA_BIND_DIR}:/data
+    restart: unless-stopped
+    ports:
+      - "8087:8087"
+```
 
 ## Open-Source Pre-Publish Checks
 

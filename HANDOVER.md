@@ -83,6 +83,7 @@ Implemented MVP for the planned ComposePulse web app:
 - README tuning: reduced environment-specific guidance and centered reverse-proxy examples on Caddy and Traefik
 - README clarity pass: repositioned the project as a safe self-hosted Docker Compose updater, simplified first-run steps, and added public screenshots under `docs/screenshots/login.png` and `docs/screenshots/dashboard.png`
 - README requirement pass: clarified that DIUN is required for automatic updates, while manual-only operation can start without DIUN; linked the official DIUN docs in prerequisites and setup steps
+- README portability pass: generalized the public wording away from `/share/Container`-specific messaging and explained that non-QNAP hosts should override `CONTAINER_ROOT` plus the matching bind mount in a local compose override
 - README branding polish: added a rounded-corner README-specific app icon near the top of the README for clearer project identity on GitHub
 - UI branding polish: added the app icon to the login card header and the dashboard topbar so the app identity is visible in the top-left of both primary screens
 - Local-only compose override policy added: environment-specific override files stay outside the public repo
@@ -101,6 +102,8 @@ Implemented MVP for the planned ComposePulse web app:
 - PWA icon concept exploration: added A/B/C comparison proposals (512px/64px) under `web/icons/proposals/composepulse-{a,b,c}-{512,64}.png`
 - PWA icon redesign (Liquid Glass style): applied an app-tile background, glass highlight layer, and glass-treated symbol, then updated the `-v3` icon set, manifest, and service worker cache key (`v19`) for iOS
 - Release QA baseline (repo-side): Dockerized `go test ./...`, prepublish check, preview boot, login/rate-limit, manual update, prune, auth denial, webhook secret mismatch, DIUN queue/match, CSV export, and path-safety checks passed; current public release scope is desktop-first, while mobile/PWA validation is deferred to follow-up and should not be advertised as release-gated support yet
+- GitHub Actions release automation added: CI now runs prepublish checks plus Dockerized Go tests on `main`/PRs, and tag pushes matching `v*` now publish multi-arch Docker Hub images (`linux/amd64`, `linux/arm64`) and create GitHub Releases automatically; Docker Hub config is documented in the README and open-source release checklist
+- Prepublish release guard fix: `scripts/prepublish_check.sh` no longer flags `.env.example` as a tracked sensitive file, so the new GitHub Actions CI/release workflow can pass with the intended public sample env file committed
 
 Key files:
 
