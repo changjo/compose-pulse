@@ -104,6 +104,7 @@ Implemented MVP for the planned ComposePulse web app:
 - Release QA baseline (repo-side): Dockerized `go test ./...`, prepublish check, preview boot, login/rate-limit, manual update, prune, auth denial, webhook secret mismatch, DIUN queue/match, CSV export, and path-safety checks passed; current public release scope is desktop-first, while mobile/PWA validation is deferred to follow-up and should not be advertised as release-gated support yet
 - GitHub Actions release automation added: CI now runs prepublish checks plus Dockerized Go tests on `main`/PRs, and tag pushes matching `v*` now publish multi-arch Docker Hub images (`linux/amd64`, `linux/arm64`) and create GitHub Releases automatically; Docker Hub config is documented in the README and open-source release checklist
 - Prepublish release guard fix: `scripts/prepublish_check.sh` no longer flags `.env.example` as a tracked sensitive file, so the new GitHub Actions CI/release workflow can pass with the intended public sample env file committed
+- Docker Hub deployment convenience added: `docker-compose.image.yml` now mirrors the runtime settings of the build-based compose file but pulls `changjo/composepulse` via `COMPOSEPULSE_IMAGE`, and the README now shows both local-build and published-image startup paths
 
 Key files:
 

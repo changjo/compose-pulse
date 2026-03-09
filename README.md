@@ -130,15 +130,28 @@ If your `.env` lives elsewhere:
 
 ### 3. Start ComposePulse
 
+Build from the local checkout:
+
 ```bash
 docker compose up -d --build
+```
+
+Pull a published Docker Hub image instead:
+
+```bash
+COMPOSEPULSE_IMAGE=changjo/composepulse:v0.1.0 docker compose -f docker-compose.image.yml up -d
 ```
 
 Default URL:
 
 - `http://<HOST-IP>:8087/login`
 
-The bundled [`docker-compose.yml`](./docker-compose.yml) builds the image locally from this checkout. If you prefer a published image from Docker Hub, use the release flow described in [Releases and Docker Images](#releases-and-docker-images).
+File roles:
+
+- [`docker-compose.yml`](./docker-compose.yml): build from the current checkout
+- [`docker-compose.image.yml`](./docker-compose.image.yml): pull a published image from Docker Hub
+
+The Docker Hub compose file defaults to `changjo/composepulse:latest`, but pinning `COMPOSEPULSE_IMAGE` to a release tag such as `changjo/composepulse:v0.1.0` is safer for production.
 
 If you are not using `/share/Container`, override both the read-only bind mount and `CONTAINER_ROOT` in your own local override file such as `docker-compose.custom.yml`. Do not commit personal override files to the public repository.
 
@@ -439,12 +452,20 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-If you want to deploy from Docker Hub instead of building locally, use your own compose file or adapt the bundled one so the service points at a published image tag:
+If you want to deploy from Docker Hub instead of building locally, use [`docker-compose.image.yml`](./docker-compose.image.yml). It reads `COMPOSEPULSE_IMAGE` and defaults to `changjo/composepulse:latest`.
+
+Recommended pinned-tag launch:
+
+```bash
+COMPOSEPULSE_IMAGE=changjo/composepulse:v0.1.0 docker compose -f docker-compose.image.yml up -d
+```
+
+Its service definition is:
 
 ```yaml
 services:
   composepulse:
-    image: docker.io/<namespace>/<image>:v0.1.0
+    image: "${COMPOSEPULSE_IMAGE:-changjo/composepulse:latest}"
     container_name: composepulse
     user: "0:0"
     environment:
