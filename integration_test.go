@@ -89,6 +89,7 @@ func newTestHarnessWithConfig(t *testing.T, fakeDocker bool, mutate func(*Config
 		dashboardLimiter: newSSELimiter(cfg.DashboardSSEMax),
 		loginLimiter:     newLoginRateLimiter(cfg.LoginRateLimit),
 		pushDedupe:       map[string]int64{},
+		assetVersion:     "test-asset-version",
 	}
 	if err := app.initAuthAndWebhookSecret(context.Background()); err != nil {
 		t.Fatalf("init auth/webhook secret: %v", err)
@@ -701,6 +702,39 @@ func TestIntegrationMetricsIncludesDashboardAndPushBreakdown(t *testing.T) {
 	}
 }
 
+func TestIntegrationMetricsToleratesMissingOptionalTelemetryTables(t *testing.T) {
+	h := newTestHarness(t, false)
+	loginAsAdmin(t, h)
+
+	for _, stmt := range []string{
+		`DROP TABLE webhook_receipts`,
+		`DROP TABLE auth_login_events`,
+		`DROP TABLE push_delivery_logs`,
+	} {
+		if _, err := h.app.db.Exec(stmt); err != nil {
+			t.Fatalf("exec %q: %v", stmt, err)
+		}
+	}
+
+	resp, raw := doJSONRequest(t, h.client, http.MethodGet, h.server.URL+"/api/metrics", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("metrics status = %d, want %d body=%s", resp.StatusCode, http.StatusOK, string(raw))
+	}
+	var m Metrics
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("unmarshal metrics: %v", err)
+	}
+	if m.WebhookTotalLast24h != 0 || m.WebhookFailures24h != 0 {
+		t.Fatalf("webhook metrics = (%d,%d), want zero fallback", m.WebhookTotalLast24h, m.WebhookFailures24h)
+	}
+	if m.LoginFailures24h != 0 || m.LoginRateLimited24h != 0 {
+		t.Fatalf("login metrics = (%d,%d), want zero fallback", m.LoginFailures24h, m.LoginRateLimited24h)
+	}
+	if m.PushSent24h != 0 || m.PushFailed24h != 0 {
+		t.Fatalf("push metrics = (%d,%d), want zero fallback", m.PushSent24h, m.PushFailed24h)
+	}
+}
+
 func TestIntegrationDashboardStreamAuthAndPatch(t *testing.T) {
 	h := newTestHarness(t, false)
 
@@ -789,6 +823,57 @@ func TestIntegrationDashboardStreamAuthAndPatch(t *testing.T) {
 	}
 	if !seenTargetPatch {
 		t.Fatal("expected target_created dashboard patch with targets section")
+	}
+}
+
+func TestIntegrationLoginPageServesVersionedAssets(t *testing.T) {
+	h := newTestHarness(t, false)
+
+	resp, err := h.client.Get(h.server.URL + "/login")
+	if err != nil {
+		t.Fatalf("get login page: %v", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("login page status = %d, want %d body=%s", resp.StatusCode, http.StatusOK, string(raw))
+	}
+	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("login page cache-control = %q, want no-store", got)
+	}
+	body := string(raw)
+	if !strings.Contains(body, "/styles.css?v=test-asset-version") {
+		t.Fatalf("login page missing versioned stylesheet: %s", body)
+	}
+	if !strings.Contains(body, "/login.js?v=test-asset-version") {
+		t.Fatalf("login page missing versioned login.js: %s", body)
+	}
+}
+
+func TestIntegrationDashboardPageServesVersionedAssets(t *testing.T) {
+	h := newTestHarness(t, false)
+	loginAsAdmin(t, h)
+
+	resp, err := h.client.Get(h.server.URL + "/")
+	if err != nil {
+		t.Fatalf("get dashboard page: %v", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("dashboard page status = %d, want %d body=%s", resp.StatusCode, http.StatusOK, string(raw))
+	}
+	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("dashboard page cache-control = %q, want no-store", got)
+	}
+	body := string(raw)
+	if !strings.Contains(body, `data-asset-version="test-asset-version"`) {
+		t.Fatalf("dashboard page missing asset version bootstrap: %s", body)
+	}
+	if !strings.Contains(body, "/app.js?v=test-asset-version") {
+		t.Fatalf("dashboard page missing versioned app.js: %s", body)
 	}
 }
 
@@ -1435,6 +1520,73 @@ services:
 	}
 }
 
+func TestIntegrationWebhookMatchesEntryImageStringPayload(t *testing.T) {
+	h := newTestHarness(t, true)
+	loginAsAdmin(t, h)
+
+	composeDir := filepath.Join(h.app.cfg.ContainerRoot, "entry-image-string")
+	if err := os.MkdirAll(composeDir, 0o755); err != nil {
+		t.Fatalf("mkdir compose dir: %v", err)
+	}
+	composeFile := filepath.Join(composeDir, "docker-compose.yml")
+	if err := os.WriteFile(composeFile, []byte(`
+services:
+  app:
+    image: ghcr.io/acme/string-entry:latest
+`), 0o644); err != nil {
+		t.Fatalf("write compose file: %v", err)
+	}
+
+	resp, raw := doJSONRequest(t, h.client, http.MethodPost, h.server.URL+"/api/targets", map[string]any{
+		"name":         "entry-image-string",
+		"compose_dir":  composeDir,
+		"compose_file": "docker-compose.yml",
+		"image_repo":   "ghcr.io/acme/string-entry",
+	}, nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create target status = %d, want %d body=%s", resp.StatusCode, http.StatusCreated, string(raw))
+	}
+	var created Target
+	if err := json.Unmarshal(raw, &created); err != nil {
+		t.Fatalf("unmarshal target: %v", err)
+	}
+
+	resp, raw = doJSONRequest(t, h.client, http.MethodPatch, h.server.URL+"/api/targets/"+strconv.FormatInt(created.ID, 10), map[string]any{
+		"auto_update_enabled": true,
+	}, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("enable auto update status = %d, want %d body=%s", resp.StatusCode, http.StatusOK, string(raw))
+	}
+
+	payload := map[string]any{
+		"entry": map[string]any{
+			"image":  "ghcr.io/acme/string-entry:5.4.3",
+			"tag":    "5.4.3",
+			"digest": "sha256:11223344",
+		},
+	}
+	resp, raw = doJSONRequest(t, h.client, http.MethodPost, h.server.URL+"/api/diun/webhook", payload, map[string]string{
+		"X-DIUN-SECRET": h.app.webhookSecret,
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("webhook status = %d, want %d body=%s", resp.StatusCode, http.StatusOK, string(raw))
+	}
+
+	var webhookResp diunWebhookResponse
+	if err := json.Unmarshal(raw, &webhookResp); err != nil {
+		t.Fatalf("unmarshal webhook response: %v", err)
+	}
+	if webhookResp.ImageRepo != "ghcr.io/acme/string-entry" {
+		t.Fatalf("image_repo = %q, want ghcr.io/acme/string-entry", webhookResp.ImageRepo)
+	}
+	if webhookResp.MatchedCount != 1 {
+		t.Fatalf("matched_count = %d, want 1", webhookResp.MatchedCount)
+	}
+	if webhookResp.QueuedCount != 1 {
+		t.Fatalf("queued_count = %d, want 1", webhookResp.QueuedCount)
+	}
+}
+
 func TestIntegrationWebhookMatchesDockerHubCanonicalRepo(t *testing.T) {
 	h := newTestHarness(t, true)
 	loginAsAdmin(t, h)
@@ -1577,6 +1729,134 @@ func TestIntegrationWebhookMatchesLegacyNormalizedTargetImageRepo(t *testing.T) 
 	}
 	if primaryRepo != "docker.io/library/nginx" {
 		t.Fatalf("normalized target image_repo = %q, want docker.io/library/nginx", primaryRepo)
+	}
+}
+
+func TestIntegrationWebhookQueueFullStoresReceiptReason(t *testing.T) {
+	h := newTestHarness(t, false)
+	loginAsAdmin(t, h)
+
+	composeDir := filepath.Join(h.app.cfg.ContainerRoot, "queue-full-app")
+	if err := os.MkdirAll(composeDir, 0o755); err != nil {
+		t.Fatalf("mkdir compose dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(composeDir, "docker-compose.yml"), []byte("services:\n  app:\n    image: ghcr.io/acme/queue-full:latest\n"), 0o644); err != nil {
+		t.Fatalf("write compose file: %v", err)
+	}
+
+	resp, raw := doJSONRequest(t, h.client, http.MethodPost, h.server.URL+"/api/targets", map[string]any{
+		"name":         "queue-full-app",
+		"compose_dir":  composeDir,
+		"compose_file": "docker-compose.yml",
+		"image_repo":   "ghcr.io/acme/queue-full",
+	}, nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create target status = %d, want %d body=%s", resp.StatusCode, http.StatusCreated, string(raw))
+	}
+	var created Target
+	if err := json.Unmarshal(raw, &created); err != nil {
+		t.Fatalf("unmarshal target: %v", err)
+	}
+
+	resp, raw = doJSONRequest(t, h.client, http.MethodPatch, h.server.URL+"/api/targets/"+strconv.FormatInt(created.ID, 10), map[string]any{
+		"auto_update_enabled": true,
+	}, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("enable auto update status = %d, want %d body=%s", resp.StatusCode, http.StatusOK, string(raw))
+	}
+
+	h.app.queue = nil
+
+	payload := map[string]any{
+		"image": "ghcr.io/acme/queue-full:1.0.0",
+	}
+	resp, raw = doJSONRequest(t, h.client, http.MethodPost, h.server.URL+"/api/diun/webhook", payload, map[string]string{
+		"X-DIUN-SECRET": h.app.webhookSecret,
+	})
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("webhook status = %d, want %d body=%s", resp.StatusCode, http.StatusServiceUnavailable, string(raw))
+	}
+
+	resp, raw = doJSONRequest(t, h.client, http.MethodGet, h.server.URL+"/api/diun/receipts?limit=1", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("receipts status = %d, want %d body=%s", resp.StatusCode, http.StatusOK, string(raw))
+	}
+	var out struct {
+		Receipts []WebhookReceiptSummary `json:"receipts"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal receipts response: %v", err)
+	}
+	if len(out.Receipts) != 1 {
+		t.Fatalf("receipts len = %d, want 1", len(out.Receipts))
+	}
+	if out.Receipts[0].ReasonCode != webhookReasonQueueFull {
+		t.Fatalf("receipt reason_code = %q, want %q", out.Receipts[0].ReasonCode, webhookReasonQueueFull)
+	}
+}
+
+func TestIntegrationWebhookInternalErrorStoresReceiptReason(t *testing.T) {
+	h := newTestHarness(t, false)
+	loginAsAdmin(t, h)
+
+	composeDir := filepath.Join(h.app.cfg.ContainerRoot, "internal-error-app")
+	if err := os.MkdirAll(composeDir, 0o755); err != nil {
+		t.Fatalf("mkdir compose dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(composeDir, "docker-compose.yml"), []byte("services:\n  app:\n    image: ghcr.io/acme/internal-error:latest\n"), 0o644); err != nil {
+		t.Fatalf("write compose file: %v", err)
+	}
+
+	resp, raw := doJSONRequest(t, h.client, http.MethodPost, h.server.URL+"/api/targets", map[string]any{
+		"name":         "internal-error-app",
+		"compose_dir":  composeDir,
+		"compose_file": "docker-compose.yml",
+		"image_repo":   "ghcr.io/acme/internal-error",
+	}, nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create target status = %d, want %d body=%s", resp.StatusCode, http.StatusCreated, string(raw))
+	}
+	var created Target
+	if err := json.Unmarshal(raw, &created); err != nil {
+		t.Fatalf("unmarshal target: %v", err)
+	}
+
+	resp, raw = doJSONRequest(t, h.client, http.MethodPatch, h.server.URL+"/api/targets/"+strconv.FormatInt(created.ID, 10), map[string]any{
+		"auto_update_enabled": true,
+	}, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("enable auto update status = %d, want %d body=%s", resp.StatusCode, http.StatusOK, string(raw))
+	}
+
+	if _, err := h.app.db.Exec(`DROP TABLE job_targets`); err != nil {
+		t.Fatalf("drop job_targets: %v", err)
+	}
+
+	payload := map[string]any{
+		"image": "ghcr.io/acme/internal-error:2.0.0",
+	}
+	resp, raw = doJSONRequest(t, h.client, http.MethodPost, h.server.URL+"/api/diun/webhook", payload, map[string]string{
+		"X-DIUN-SECRET": h.app.webhookSecret,
+	})
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("webhook status = %d, want %d body=%s", resp.StatusCode, http.StatusInternalServerError, string(raw))
+	}
+
+	resp, raw = doJSONRequest(t, h.client, http.MethodGet, h.server.URL+"/api/diun/receipts?limit=1", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("receipts status = %d, want %d body=%s", resp.StatusCode, http.StatusOK, string(raw))
+	}
+	var out struct {
+		Receipts []WebhookReceiptSummary `json:"receipts"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal receipts response: %v", err)
+	}
+	if len(out.Receipts) != 1 {
+		t.Fatalf("receipts len = %d, want 1", len(out.Receipts))
+	}
+	if out.Receipts[0].ReasonCode != webhookReasonInternalError {
+		t.Fatalf("receipt reason_code = %q, want %q", out.Receipts[0].ReasonCode, webhookReasonInternalError)
 	}
 }
 

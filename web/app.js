@@ -833,7 +833,9 @@ async function registerServiceWorker() {
     return;
   }
   try {
-    serviceWorkerRegistration = await navigator.serviceWorker.register("/sw.js");
+    const assetVersion = encodeURIComponent(String(window.__ASSET_VERSION__ || "").trim());
+    const serviceWorkerURL = assetVersion ? `/sw.js?v=${assetVersion}` : "/sw.js";
+    serviceWorkerRegistration = await navigator.serviceWorker.register(serviceWorkerURL);
   } catch (err) {
     console.error("service worker register failed:", err);
     serviceWorkerRegistration = null;
@@ -1511,18 +1513,19 @@ function rerenderResponsiveTablesIfNeeded() {
 
 async function loadMetrics() {
   const m = await fetchJSON("/api/metrics");
-  metricFailed.textContent = String(m.failed_jobs_last_24h);
-  metricAvg.textContent = Number(m.avg_duration_sec_24h || 0).toFixed(2);
-  metricWebhook.textContent = `${(Number(m.webhook_failure_rate_24h || 0) * 100).toFixed(1)}% (${m.webhook_total_24h})`;
-  if (metricWebhookFailed) metricWebhookFailed.textContent = String(m.webhook_failures_24h || 0);
-  if (metricLoginFailed) metricLoginFailed.textContent = String(m.login_failures_24h || 0);
-  if (metricLoginLimited) metricLoginLimited.textContent = String(m.login_rate_limited_24h || 0);
-  if (metricDashboardStream) {
-    metricDashboardStream.textContent = `${Number(m.dashboard_stream_active || 0)} / ${Number(m.dashboard_stream_rejected_total || 0)}`;
-  }
-  if (metricPushDelivery) {
-    metricPushDelivery.textContent = `${Number(m.push_sent_24h || 0)} / ${Number(m.push_failed_24h || 0)}`;
-  }
+  setElementText(metricFailed, String(m.failed_jobs_last_24h ?? 0));
+  setElementText(metricAvg, Number(m.avg_duration_sec_24h || 0).toFixed(2));
+  setElementText(metricWebhook, `${(Number(m.webhook_failure_rate_24h || 0) * 100).toFixed(1)}% (${Number(m.webhook_total_24h || 0)})`);
+  setElementText(metricWebhookFailed, String(m.webhook_failures_24h || 0));
+  setElementText(metricLoginFailed, String(m.login_failures_24h || 0));
+  setElementText(metricLoginLimited, String(m.login_rate_limited_24h || 0));
+  setElementText(metricDashboardStream, `${Number(m.dashboard_stream_active || 0)} / ${Number(m.dashboard_stream_rejected_total || 0)}`);
+  setElementText(metricPushDelivery, `${Number(m.push_sent_24h || 0)} / ${Number(m.push_failed_24h || 0)}`);
+}
+
+function setElementText(el, value) {
+  if (!el) return;
+  el.textContent = value;
 }
 
 async function loadWebhookConfig() {

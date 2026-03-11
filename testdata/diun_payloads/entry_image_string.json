@@ -1,0 +1,7 @@
+{
+  "entry": {
+    "image": "ghcr.io/acme/string-entry:5.4.3",
+    "tag": "5.4.3",
+    "digest": "sha256:11223344"
+  }
+}

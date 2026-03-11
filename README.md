@@ -16,6 +16,7 @@ What ComposePulse does:
 - Runs manual updates with `docker compose pull` and `docker compose up -d`
 - Accepts DIUN webhooks and queues only matching targets for auto update
 - Streams live job logs and dashboard updates
+- Shows 24h operational metrics and falls back to zero for missing optional telemetry history during upgrades
 - Includes best-effort mobile/PWA support
 - Keeps job history, audit summaries, DIUN events, and webhook receipts
 - Runs `docker image prune -f` from the UI
@@ -198,6 +199,7 @@ ComposePulse accepts DIUN repository information from these payload fields:
 
 - `entry.image.name`
 - `entry.image.repository`
+- `entry.image`
 - `entry.repository`
 - `image.repository`
 - `repository`
@@ -214,6 +216,7 @@ Notes:
 - `/api/diun/webhook/config` returns a masked secret by default
 - Only set `WEBHOOK_CONFIG_SHOW_SECRET=true` if you explicitly want the raw secret exposed in the UI
 - Cooldown windows and maintenance windows can be used to suppress duplicate or badly timed auto updates
+- Webhook receipts now use explicit failure reasons such as `payload_invalid`, `no_match`, `queue_full`, and `internal_error` instead of a generic unknown reason
 - Existing targets from older builds are normalized to canonical repository names on startup so Docker Hub shorthand values such as `nginx` keep matching DIUN webhook payloads
 
 ## Security Model
@@ -306,7 +309,7 @@ Notes:
 - Android: use the browser install or add-to-home-screen menu
 - iPhone: Safari -> Share -> Add to Home Screen
 - If you change iPhone icons later, remove the existing shortcut and add it again
-- After frontend updates, reopen or refresh the installed app once so the latest cached assets are activated
+- After frontend updates, reopen or refresh the installed app once so the latest versioned assets and service worker are activated
 - Web Push on iOS requires iOS 16.4+
 - Mobile/PWA behavior is not part of the current public release gate; treat it as convenience functionality rather than the primary operating path
 

@@ -55,7 +55,7 @@ Implemented MVP for the planned ComposePulse web app:
 - Auth hardening: login rate limit (`IP+username`, `429` + `Retry-After`) with configurable envs
 - Metrics expansion: login failures/rate-limited counts + webhook failed count in 24h
 - DIUN observability: webhook receipts endpoint (`GET /api/diun/receipts`) with `status_code/reason_code/queued_job_id`
-- Webhook reason code standardization (`secret_mismatch`, `payload_invalid`, `no_match`, `queued`, `auto_disabled`, `cooldown_blocked`, `outside_maintenance_window`)
+- Webhook reason code standardization (`secret_mismatch`, `payload_invalid`, `no_match`, `queued`, `queue_full`, `internal_error`, `auto_disabled`, `cooldown_blocked`, `outside_maintenance_window`)
 - Image repo canonicalization extended for Docker Hub shorthand/alias matching (`nginx` <-> `docker.io/library/nginx`, `index.docker.io` -> `docker.io`)
 - Pull retry optimization: `toomanyrequests` `retry-after` parsing with clamp (2s~120s) and retry log visibility
 - Advanced UX: dashboard advanced sections hidden by default, toggle state persisted via localStorage, advanced polling paused when OFF
@@ -75,6 +75,9 @@ Implemented MVP for the planned ComposePulse web app:
 - Mobile metrics density tweak: the Operational Metrics panel now uses a 2-column grid on common phone widths and falls back to 1 column only below 360px
 - Pull-to-refresh rework: touch devices now use a touch-first refresh gesture path with stronger top-of-page/horizontal-drag guards, the mobile indicator is now an iPhone-style circular progress bubble that fills while pulling and spins during refresh, and the service worker static cache key was bumped so updated UI assets replace older PWA-cached copies
 - Release hardening fix: startup migration now normalizes legacy `targets.image_repo` and `target_image_repos` values to canonical repository names so older Docker Hub shorthand targets continue matching DIUN webhook payloads after upgrade
+- DIUN webhook hardening: payload extraction now also accepts `entry.image` string payloads, and webhook receipt failures now store explicit `queue_full` / `internal_error` reason codes so failed auto-update attempts no longer appear as a generic unknown reason
+- Dashboard metrics hardening: `/api/metrics` now falls back to zero when optional telemetry tables are missing in older DBs instead of failing the entire metrics panel, and the frontend metrics renderer now skips absent DOM nodes instead of aborting the whole card update
+- Frontend asset cache hardening: `/` and `/login` now serve versioned JS/CSS/manifest URLs plus `Cache-Control: no-store`, and `app.js` registers `sw.js` with the same asset version so stale browser/PWA caches no longer keep an older metrics renderer paired with newer HTML
 - Webhook config hardening: `/api/diun/webhook/config` now returns only a masked secret by default (raw value only when `WEBHOOK_CONFIG_SHOW_SECRET=true`)
 - Frontend behavior change: the Advanced view no longer auto-calls `/api/diun/webhook/config`; it shows only the path, header name, and a hidden-secret notice
 - Open-source prep: strengthened local runtime/secret patterns in `.gitignore` and added `docs/OPEN_SOURCE_RELEASE_CHECKLIST.md`

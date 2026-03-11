@@ -21,6 +21,12 @@ func TestExtractDiunFieldsFromFixtures(t *testing.T) {
 			wantDigest: "sha256:aaaabbbb",
 		},
 		{
+			file:       "entry_image_string.json",
+			wantRepo:   "ghcr.io/acme/string-entry",
+			wantTag:    "5.4.3",
+			wantDigest: "sha256:11223344",
+		},
+		{
 			file:     "entry_image_repository.json",
 			wantRepo: "docker.io/library/nginx",
 			wantTag:  "1.27.1",
@@ -34,6 +40,10 @@ func TestExtractDiunFieldsFromFixtures(t *testing.T) {
 			file:     "root_repository_with_digest.json",
 			wantRepo: "registry.example.com/ops/worker",
 			wantTag:  "ignored-tag",
+		},
+		{
+			file:     "root_image_string.json",
+			wantRepo: "docker.io/crazymax/diun",
 		},
 	}
 

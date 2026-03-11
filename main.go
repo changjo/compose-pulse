@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -58,6 +59,8 @@ const (
 	webhookReasonPayloadInvalid           = "payload_invalid"
 	webhookReasonNoMatch                  = "no_match"
 	webhookReasonQueued                   = "queued"
+	webhookReasonQueueFull                = "queue_full"
+	webhookReasonInternalError            = "internal_error"
 	webhookReasonAutoDisabled             = "auto_disabled"
 	webhookReasonCooldownBlocked          = "cooldown_blocked"
 	webhookReasonOutsideMaintenanceWindow = "outside_maintenance_window"
@@ -126,6 +129,7 @@ type App struct {
 	loginLimiter      *LoginRateLimiter
 	pushDedupeMu      sync.Mutex
 	pushDedupe        map[string]int64
+	assetVersion      string
 }
 
 type LogBroker struct {
@@ -392,6 +396,7 @@ func main() {
 		dashboardLimiter: newSSELimiter(cfg.DashboardSSEMax),
 		loginLimiter:     newLoginRateLimiter(cfg.LoginRateLimit),
 		pushDedupe:       map[string]int64{},
+		assetVersion:     newAssetVersion(),
 	}
 
 	if err := app.initAuthAndWebhookSecret(context.Background()); err != nil {
@@ -938,6 +943,7 @@ func (a *App) routes(mux *http.ServeMux) {
 		log.Printf("serving web assets from WEB_DIR=%s", a.cfg.WebDir)
 	}
 	staticHandler := http.FileServer(http.FS(staticFS))
+	staticHandler = withStaticAssetCacheHeaders(staticHandler)
 	apiTimeout := time.Duration(a.cfg.APITimeoutSeconds) * time.Second
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -950,7 +956,9 @@ func (a *App) routes(mux *http.ServeMux) {
 				http.Redirect(w, r, "/login", http.StatusFound)
 				return
 			}
-			http.ServeFileFS(w, r, staticFS, "index.html")
+			if err := serveVersionedHTML(w, r, staticFS, "index.html", a.assetVersion); err != nil {
+				writeAPIErrorFromErr(w, http.StatusInternalServerError, "internal_error", err)
+			}
 			return
 		}
 		if r.URL.Path == "/login" || r.URL.Path == "/login/" {
@@ -958,7 +966,9 @@ func (a *App) routes(mux *http.ServeMux) {
 				http.Redirect(w, r, "/", http.StatusFound)
 				return
 			}
-			http.ServeFileFS(w, r, staticFS, "login.html")
+			if err := serveVersionedHTML(w, r, staticFS, "login.html", a.assetVersion); err != nil {
+				writeAPIErrorFromErr(w, http.StatusInternalServerError, "internal_error", err)
+			}
 			return
 		}
 		staticHandler.ServeHTTP(w, r)
@@ -1007,6 +1017,33 @@ func resolveWebFS(webDir string) (fs.FS, error) {
 		return nil, fmt.Errorf("WEB_DIR is not a directory: %s", clean)
 	}
 	return os.DirFS(clean), nil
+}
+
+func serveVersionedHTML(w http.ResponseWriter, r *http.Request, staticFS fs.FS, name, assetVersion string) error {
+	raw, err := fs.ReadFile(staticFS, name)
+	if err != nil {
+		return err
+	}
+	version := strings.TrimSpace(assetVersion)
+	if version == "" {
+		version = "dev"
+	}
+	body := bytes.ReplaceAll(raw, []byte("__ASSET_VERSION__"), []byte(version))
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	http.ServeContent(w, r, name, time.Now(), bytes.NewReader(body))
+	return nil
+}
+
+func withStaticAssetCacheHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := strings.ToLower(strings.TrimSpace(r.URL.Path))
+		switch {
+		case strings.HasSuffix(path, ".js"), strings.HasSuffix(path, ".css"), strings.HasSuffix(path, ".webmanifest"), strings.HasSuffix(path, ".svg"), strings.HasSuffix(path, ".png"), strings.HasSuffix(path, ".ico"):
+			w.Header().Set("Cache-Control", "no-cache")
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (a *App) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -1150,17 +1187,17 @@ func (a *App) handleMetrics(w http.ResponseWriter, r *http.Request) {
 
 	var webhookTotal int64
 	var webhookFailed int64
-	if err := a.db.QueryRowContext(r.Context(),
+	if err := queryCountWithMissingTableFallback(r.Context(), a.db, &webhookTotal,
 		`SELECT COUNT(*) FROM webhook_receipts WHERE received_at >= ?`,
 		since,
-	).Scan(&webhookTotal); err != nil {
+	); err != nil {
 		writeAPIErrorFromErr(w, http.StatusInternalServerError, "internal_error", err)
 		return
 	}
-	if err := a.db.QueryRowContext(r.Context(),
+	if err := queryCountWithMissingTableFallback(r.Context(), a.db, &webhookFailed,
 		`SELECT COUNT(*) FROM webhook_receipts WHERE received_at >= ? AND success = 0`,
 		since,
-	).Scan(&webhookFailed); err != nil {
+	); err != nil {
 		writeAPIErrorFromErr(w, http.StatusInternalServerError, "internal_error", err)
 		return
 	}
@@ -1172,17 +1209,17 @@ func (a *App) handleMetrics(w http.ResponseWriter, r *http.Request) {
 
 	var loginFailures int64
 	var loginRateLimited int64
-	if err := a.db.QueryRowContext(r.Context(),
+	if err := queryCountWithMissingTableFallback(r.Context(), a.db, &loginFailures,
 		`SELECT COUNT(*) FROM auth_login_events WHERE created_at >= ? AND success = 0 AND rate_limited = 0`,
 		since,
-	).Scan(&loginFailures); err != nil {
+	); err != nil {
 		writeAPIErrorFromErr(w, http.StatusInternalServerError, "internal_error", err)
 		return
 	}
-	if err := a.db.QueryRowContext(r.Context(),
+	if err := queryCountWithMissingTableFallback(r.Context(), a.db, &loginRateLimited,
 		`SELECT COUNT(*) FROM auth_login_events WHERE created_at >= ? AND rate_limited = 1`,
 		since,
-	).Scan(&loginRateLimited); err != nil {
+	); err != nil {
 		writeAPIErrorFromErr(w, http.StatusInternalServerError, "internal_error", err)
 		return
 	}
@@ -1202,17 +1239,17 @@ func (a *App) handleMetrics(w http.ResponseWriter, r *http.Request) {
 
 	var pushSent int64
 	var pushFailed int64
-	if err := a.db.QueryRowContext(r.Context(),
+	if err := queryCountWithMissingTableFallback(r.Context(), a.db, &pushSent,
 		`SELECT COUNT(*) FROM push_delivery_logs WHERE created_at >= ? AND success = 1`,
 		since,
-	).Scan(&pushSent); err != nil {
+	); err != nil {
 		writeAPIErrorFromErr(w, http.StatusInternalServerError, "internal_error", err)
 		return
 	}
-	if err := a.db.QueryRowContext(r.Context(),
+	if err := queryCountWithMissingTableFallback(r.Context(), a.db, &pushFailed,
 		`SELECT COUNT(*) FROM push_delivery_logs WHERE created_at >= ? AND success = 0`,
 		since,
-	).Scan(&pushFailed); err != nil {
+	); err != nil {
 		writeAPIErrorFromErr(w, http.StatusInternalServerError, "internal_error", err)
 		return
 	}
@@ -1232,6 +1269,19 @@ func (a *App) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		PushSent24h:                  pushSent,
 		PushFailed24h:                pushFailed,
 	})
+}
+
+func queryCountWithMissingTableFallback(ctx context.Context, db *sql.DB, dest *int64, query string, args ...any) error {
+	err := db.QueryRowContext(ctx, query, args...).Scan(dest)
+	if err == nil {
+		return nil
+	}
+	if isSQLiteMissingTableErr(err) {
+		*dest = 0
+		log.Printf("metrics fallback: treating missing table as zero for query %q: %v", query, err)
+		return nil
+	}
+	return err
 }
 
 func (a *App) handleDiscoverContainers(w http.ResponseWriter, r *http.Request) {
@@ -2077,7 +2127,7 @@ func (a *App) handleDiunWebhook(w http.ResponseWriter, r *http.Request) {
 
 	targets, err := a.findTargetsByImageRepo(r.Context(), imageRepo)
 	if err != nil {
-		recordReceipt(false, http.StatusInternalServerError, "", err.Error(), nil)
+		recordReceipt(false, http.StatusInternalServerError, webhookReasonInternalError, err.Error(), nil)
 		writeAPIErrorFromErr(w, http.StatusInternalServerError, "internal_error", err)
 		return
 	}
@@ -2115,7 +2165,7 @@ func (a *App) handleDiunWebhook(w http.ResponseWriter, r *http.Request) {
 			}
 			inCooldown, err := a.targetInCooldown(r.Context(), t.ID, cooldown)
 			if err != nil {
-				recordReceipt(false, http.StatusInternalServerError, "", err.Error(), nil)
+				recordReceipt(false, http.StatusInternalServerError, webhookReasonInternalError, err.Error(), nil)
 				writeAPIErrorFromErr(w, http.StatusInternalServerError, "internal_error", err)
 				return
 			}
@@ -2131,13 +2181,13 @@ func (a *App) handleDiunWebhook(w http.ResponseWriter, r *http.Request) {
 	if len(queuedIDs) > 0 {
 		id, err := a.createJob(r.Context(), jobTypeUpdate, triggerAuto, queuedIDs)
 		if err != nil {
-			recordReceipt(false, http.StatusInternalServerError, "", err.Error(), nil)
+			recordReceipt(false, http.StatusInternalServerError, webhookReasonInternalError, err.Error(), nil)
 			writeAPIErrorFromErr(w, http.StatusInternalServerError, "internal_error", err)
 			return
 		}
 		if err := a.enqueueJob(id); err != nil {
 			_ = a.failJob(context.Background(), id, "queue full")
-			recordReceipt(false, http.StatusServiceUnavailable, "", "queue full", nil)
+			recordReceipt(false, http.StatusServiceUnavailable, webhookReasonQueueFull, "queue full", nil)
 			writeAPIErrorFromErr(w, http.StatusServiceUnavailable, "queue_full", err)
 			return
 		}
@@ -4344,6 +4394,10 @@ func hashString(input string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+func newAssetVersion() string {
+	return strconv.FormatInt(time.Now().UnixNano(), 36)
+}
+
 func maskSecret(secret string) string {
 	trimmed := strings.TrimSpace(secret)
 	if trimmed == "" {
@@ -4456,6 +4510,7 @@ func extractDiunFields(payload map[string]any) (string, string, string) {
 	candidates := []string{
 		getPathString(payload, "entry", "image", "name"),
 		getPathString(payload, "entry", "image", "repository"),
+		getPathString(payload, "entry", "image"),
 		getPathString(payload, "entry", "repository"),
 		getPathString(payload, "image", "name"),
 		getPathString(payload, "image", "repository"),
@@ -4541,6 +4596,13 @@ func normalizeImageRepo(raw string) string {
 
 func isExplicitRegistryHost(host string) bool {
 	return host == "localhost" || strings.Contains(host, ".") || strings.Contains(host, ":")
+}
+
+func isSQLiteMissingTableErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "no such table")
 }
 
 func validateComposeDir(root, dir string) (string, error) {

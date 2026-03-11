@@ -1,4 +1,4 @@
-const STATIC_CACHE = "composepulse-static-v26";
+const STATIC_CACHE = "composepulse-static-v28";
 const STATIC_ASSETS = [
   "/login.html",
   "/index.html",
