@@ -17,6 +17,7 @@ What ComposePulse does:
 - Accepts DIUN webhooks and queues only matching targets for auto update
 - Streams live job logs and dashboard updates
 - Shows 24h operational metrics and falls back to zero for missing optional telemetry history during upgrades
+- Shows the running app version in the login screen and dashboard header so you can confirm the deployed build quickly
 - Includes best-effort mobile/PWA support
 - Keeps job history, audit summaries, DIUN events, and webhook receipts
 - Runs `docker image prune -f` from the UI
@@ -153,6 +154,7 @@ File roles:
 - [`docker-compose.image.yml`](./docker-compose.image.yml): pull a published image from Docker Hub
 
 The Docker Hub compose file defaults to `changjo/composepulse:latest`, but pinning `COMPOSEPULSE_IMAGE` to a release tag such as `changjo/composepulse:v0.1.0` is safer for production.
+The local build compose file defaults the in-app version label to `dev`; set `COMPOSEPULSE_APP_VERSION` if you want a custom version string in a locally built image.
 
 If you are not using `/share/Container`, override both the read-only bind mount and `CONTAINER_ROOT` in your own local override file such as `docker-compose.custom.yml`. Do not commit personal override files to the public repository.
 
@@ -428,6 +430,7 @@ GitHub Actions handles both verification and image publishing:
 - `.github/workflows/release.yml` runs on tag pushes that match `v*`
 - Release builds publish multi-arch Docker Hub images for `linux/amd64` and `linux/arm64`
 - A GitHub Release is created automatically from the pushed tag
+- Published Docker images embed the Git tag into the UI so the login screen and dashboard header show the running release version
 
 Configure these repository settings before the first release tag:
 
@@ -461,6 +464,12 @@ Recommended pinned-tag launch:
 
 ```bash
 COMPOSEPULSE_IMAGE=changjo/composepulse:v0.1.0 docker compose -f docker-compose.image.yml up -d
+```
+
+If you build from the checked-out source and want the UI to show a specific version instead of `dev`, set `COMPOSEPULSE_APP_VERSION` before the build:
+
+```bash
+COMPOSEPULSE_APP_VERSION=v0.1.0 docker compose up -d --build
 ```
 
 Its service definition is:

@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"io/fs"
 	"log"
@@ -88,6 +89,8 @@ const (
 //go:embed web/*
 var webFS embed.FS
 
+var buildVersion = "dev"
+
 type Config struct {
 	Port                 string
 	DBPath               string
@@ -130,6 +133,7 @@ type App struct {
 	pushDedupeMu      sync.Mutex
 	pushDedupe        map[string]int64
 	assetVersion      string
+	appVersion        string
 }
 
 type LogBroker struct {
@@ -397,6 +401,7 @@ func main() {
 		loginLimiter:     newLoginRateLimiter(cfg.LoginRateLimit),
 		pushDedupe:       map[string]int64{},
 		assetVersion:     newAssetVersion(),
+		appVersion:       resolveBuildVersion(),
 	}
 
 	if err := app.initAuthAndWebhookSecret(context.Background()); err != nil {
@@ -956,7 +961,7 @@ func (a *App) routes(mux *http.ServeMux) {
 				http.Redirect(w, r, "/login", http.StatusFound)
 				return
 			}
-			if err := serveVersionedHTML(w, r, staticFS, "index.html", a.assetVersion); err != nil {
+			if err := serveVersionedHTML(w, r, staticFS, "index.html", a.assetVersion, a.appVersion); err != nil {
 				writeAPIErrorFromErr(w, http.StatusInternalServerError, "internal_error", err)
 			}
 			return
@@ -966,7 +971,7 @@ func (a *App) routes(mux *http.ServeMux) {
 				http.Redirect(w, r, "/", http.StatusFound)
 				return
 			}
-			if err := serveVersionedHTML(w, r, staticFS, "login.html", a.assetVersion); err != nil {
+			if err := serveVersionedHTML(w, r, staticFS, "login.html", a.assetVersion, a.appVersion); err != nil {
 				writeAPIErrorFromErr(w, http.StatusInternalServerError, "internal_error", err)
 			}
 			return
@@ -1019,16 +1024,18 @@ func resolveWebFS(webDir string) (fs.FS, error) {
 	return os.DirFS(clean), nil
 }
 
-func serveVersionedHTML(w http.ResponseWriter, r *http.Request, staticFS fs.FS, name, assetVersion string) error {
+func serveVersionedHTML(w http.ResponseWriter, r *http.Request, staticFS fs.FS, name, assetVersion, appVersion string) error {
 	raw, err := fs.ReadFile(staticFS, name)
 	if err != nil {
 		return err
 	}
-	version := strings.TrimSpace(assetVersion)
-	if version == "" {
-		version = "dev"
+	asset := strings.TrimSpace(assetVersion)
+	if asset == "" {
+		asset = "dev"
 	}
-	body := bytes.ReplaceAll(raw, []byte("__ASSET_VERSION__"), []byte(version))
+	version := html.EscapeString(resolveBuildVersionValue(appVersion))
+	body := bytes.ReplaceAll(raw, []byte("__ASSET_VERSION__"), []byte(asset))
+	body = bytes.ReplaceAll(body, []byte("__APP_VERSION__"), []byte(version))
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	http.ServeContent(w, r, name, time.Now(), bytes.NewReader(body))
@@ -4396,6 +4403,18 @@ func hashString(input string) string {
 
 func newAssetVersion() string {
 	return strconv.FormatInt(time.Now().UnixNano(), 36)
+}
+
+func resolveBuildVersion() string {
+	return resolveBuildVersionValue(buildVersion)
+}
+
+func resolveBuildVersionValue(raw string) string {
+	version := strings.TrimSpace(raw)
+	if version == "" {
+		return "dev"
+	}
+	return version
 }
 
 func maskSecret(secret string) string {

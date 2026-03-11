@@ -2,12 +2,13 @@ FROM golang:1.22-alpine AS builder
 
 WORKDIR /src
 RUN apk add --no-cache build-base
+ARG APP_VERSION=dev
 
 COPY go.mod ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=1 GOOS=linux go build -o /out/composepulse ./main.go
+RUN CGO_ENABLED=1 GOOS=linux go build -ldflags "-X main.buildVersion=${APP_VERSION}" -o /out/composepulse ./main.go
 
 FROM alpine:3.22
 

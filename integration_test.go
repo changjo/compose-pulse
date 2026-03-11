@@ -90,6 +90,7 @@ func newTestHarnessWithConfig(t *testing.T, fakeDocker bool, mutate func(*Config
 		loginLimiter:     newLoginRateLimiter(cfg.LoginRateLimit),
 		pushDedupe:       map[string]int64{},
 		assetVersion:     "test-asset-version",
+		appVersion:       "vtest-app-version",
 	}
 	if err := app.initAuthAndWebhookSecret(context.Background()); err != nil {
 		t.Fatalf("init auth/webhook secret: %v", err)
@@ -849,6 +850,9 @@ func TestIntegrationLoginPageServesVersionedAssets(t *testing.T) {
 	if !strings.Contains(body, "/login.js?v=test-asset-version") {
 		t.Fatalf("login page missing versioned login.js: %s", body)
 	}
+	if !strings.Contains(body, `data-app-version="vtest-app-version"`) {
+		t.Fatalf("login page missing embedded app version: %s", body)
+	}
 }
 
 func TestIntegrationDashboardPageServesVersionedAssets(t *testing.T) {
@@ -874,6 +878,9 @@ func TestIntegrationDashboardPageServesVersionedAssets(t *testing.T) {
 	}
 	if !strings.Contains(body, "/app.js?v=test-asset-version") {
 		t.Fatalf("dashboard page missing versioned app.js: %s", body)
+	}
+	if !strings.Contains(body, `data-app-version="vtest-app-version"`) {
+		t.Fatalf("dashboard page missing embedded app version: %s", body)
 	}
 }
 

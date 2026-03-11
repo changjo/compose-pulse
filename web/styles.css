@@ -75,6 +75,23 @@ body {
   overflow-wrap: anywhere;
 }
 
+.app-version-pill {
+  display: inline-flex;
+  align-items: center;
+  align-self: center;
+  min-height: 1.6rem;
+  padding: 0.18rem 0.55rem;
+  border: 1px solid rgba(31, 74, 115, 0.16);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--accent-strong);
+  font-size: 0.73rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  box-shadow: 0 6px 16px rgba(23, 54, 84, 0.08);
+}
+
 .pull-refresh-indicator {
   position: fixed;
   top: calc(env(safe-area-inset-top, 0px) + 8px);
@@ -707,6 +724,11 @@ td code,
   margin: 0;
 }
 
+.brand-copy .app-version-pill {
+  justify-self: start;
+  margin-top: 4px;
+}
+
 .login-brand {
   align-items: flex-start;
   margin-bottom: 4px;
@@ -730,6 +752,11 @@ td code,
   .topbar-brand h1 {
     width: auto;
     font-size: 0.98rem;
+  }
+
+  .app-version-pill {
+    font-size: 0.69rem;
+    padding: 0.16rem 0.48rem;
   }
 
   .layout {

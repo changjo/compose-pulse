@@ -3,6 +3,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        APP_VERSION: "${COMPOSEPULSE_APP_VERSION:-dev}"
     image: composepulse:latest
     container_name: composepulse
     user: "0:0"
