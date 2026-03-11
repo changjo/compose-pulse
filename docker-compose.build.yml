@@ -1,6 +1,11 @@
 services:
   composepulse:
-    image: "${COMPOSEPULSE_IMAGE:-changjo/composepulse:latest}"
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP_VERSION: "${COMPOSEPULSE_APP_VERSION:-dev}"
+    image: composepulse:latest
     container_name: composepulse
     user: "0:0"
     environment:

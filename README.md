@@ -132,16 +132,16 @@ If your `.env` lives elsewhere:
 
 ### 3. Start ComposePulse
 
-Build from the local checkout:
+Pull a published Docker Hub image with the default compose file:
 
 ```bash
-docker compose up -d --build
+COMPOSEPULSE_IMAGE=changjo/composepulse:v0.1.0 docker compose up -d
 ```
 
-Pull a published Docker Hub image instead:
+Build from the local checkout instead:
 
 ```bash
-COMPOSEPULSE_IMAGE=changjo/composepulse:v0.1.0 docker compose -f docker-compose.image.yml up -d
+docker compose -f docker-compose.build.yml up -d --build
 ```
 
 Default URL:
@@ -150,10 +150,10 @@ Default URL:
 
 File roles:
 
-- [`docker-compose.yml`](./docker-compose.yml): build from the current checkout
-- [`docker-compose.image.yml`](./docker-compose.image.yml): pull a published image from Docker Hub
+- [`docker-compose.yml`](./docker-compose.yml): pull a published image from Docker Hub
+- [`docker-compose.build.yml`](./docker-compose.build.yml): build from the current checkout
 
-The Docker Hub compose file defaults to `changjo/composepulse:latest`, but pinning `COMPOSEPULSE_IMAGE` to a release tag such as `changjo/composepulse:v0.1.0` is safer for production.
+The default Docker Hub compose file uses `changjo/composepulse:latest`, but pinning `COMPOSEPULSE_IMAGE` to a release tag such as `changjo/composepulse:v0.1.0` is safer for production.
 The local build compose file defaults the in-app version label to `dev`; set `COMPOSEPULSE_APP_VERSION` if you want a custom version string in a locally built image.
 
 If you are not using `/share/Container`, override both the read-only bind mount and `CONTAINER_ROOT` in your own local override file such as `docker-compose.custom.yml`. Do not commit personal override files to the public repository.
@@ -458,18 +458,18 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-If you want to deploy from Docker Hub instead of building locally, use [`docker-compose.image.yml`](./docker-compose.image.yml). It reads `COMPOSEPULSE_IMAGE` and defaults to `changjo/composepulse:latest`.
+For Docker Hub deployments, use the default [`docker-compose.yml`](./docker-compose.yml). It reads `COMPOSEPULSE_IMAGE` and defaults to `changjo/composepulse:latest`.
 
 Recommended pinned-tag launch:
 
 ```bash
-COMPOSEPULSE_IMAGE=changjo/composepulse:v0.1.0 docker compose -f docker-compose.image.yml up -d
+COMPOSEPULSE_IMAGE=changjo/composepulse:v0.1.0 docker compose up -d
 ```
 
-If you build from the checked-out source and want the UI to show a specific version instead of `dev`, set `COMPOSEPULSE_APP_VERSION` before the build:
+If you build from the checked-out source and want the UI to show a specific version instead of `dev`, use [`docker-compose.build.yml`](./docker-compose.build.yml) and set `COMPOSEPULSE_APP_VERSION` before the build:
 
 ```bash
-COMPOSEPULSE_APP_VERSION=v0.1.0 docker compose up -d --build
+COMPOSEPULSE_APP_VERSION=v0.1.0 docker compose -f docker-compose.build.yml up -d --build
 ```
 
 Its service definition is:

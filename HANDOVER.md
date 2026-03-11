@@ -107,7 +107,7 @@ Implemented MVP for the planned ComposePulse web app:
 - Release QA baseline (repo-side): Dockerized `go test ./...`, prepublish check, preview boot, login/rate-limit, manual update, prune, auth denial, webhook secret mismatch, DIUN queue/match, CSV export, and path-safety checks passed; current public release scope is desktop-first, while mobile/PWA validation is deferred to follow-up and should not be advertised as release-gated support yet
 - GitHub Actions release automation added: CI now runs prepublish checks plus Dockerized Go tests on `main`/PRs, and tag pushes matching `v*` now publish multi-arch Docker Hub images (`linux/amd64`, `linux/arm64`) and create GitHub Releases automatically; Docker Hub config is documented in the README and open-source release checklist
 - Prepublish release guard fix: `scripts/prepublish_check.sh` no longer flags `.env.example` as a tracked sensitive file, so the new GitHub Actions CI/release workflow can pass with the intended public sample env file committed
-- Docker Hub deployment convenience added: `docker-compose.image.yml` now mirrors the runtime settings of the build-based compose file but pulls `changjo/composepulse` via `COMPOSEPULSE_IMAGE`, and the README now shows both local-build and published-image startup paths
+- Compose file naming cleanup: the public default is now `docker-compose.yml` for Docker Hub image deployments, while local source builds moved to `docker-compose.build.yml`; the README and sample env now reflect the new default path
 - In-app version visibility added: the login screen and dashboard header now show the embedded app version, release builds inject the Git tag through Docker `APP_VERSION`, and local source builds can override the default `dev` label with `COMPOSEPULSE_APP_VERSION`
 
 Key files:
@@ -118,6 +118,7 @@ Key files:
 - `web/app.js`
 - `web/styles.css`
 - `docker-compose.yml`
+- `docker-compose.build.yml`
 - `README.md`
 - `UI_DECISIONS.md`
 
@@ -174,7 +175,7 @@ Completed:
    - `APP_DATA_BIND_DIR` (recommended)
    - `COOLDOWN_SECONDS`
 2. Deploy app:
-   - `docker compose up -d --build`
+   - `docker compose up -d` for the published image path, or `docker compose -f docker-compose.build.yml up -d --build` for a local source build
 3. Confirm mounts:
    - `/var/run/docker.sock`
    - `/share/Container:/share/Container:ro`
