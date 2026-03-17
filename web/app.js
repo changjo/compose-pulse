@@ -143,6 +143,7 @@ const I18N = {
     "target.delete_failed": "삭제 실패: {error}",
     "target.register_failed": "등록 실패: {error}",
     "job.update_queued": "업데이트 작업이 큐에 등록되었습니다. job_id={jobId}",
+    "job.update_queued_partial": "업데이트 작업이 큐에 등록되었습니다. job_id={jobId}, active 작업으로 skipped={count}",
     "job.prune_queued": "prune 작업이 큐에 등록되었습니다. job_id={jobId}",
     "job.delete_all_confirm": "작업 이력을 전체 삭제할까요? (queued/running 작업이 있으면 거부됩니다)",
     "job.delete_all_done": "작업 이력 {count}건을 삭제했습니다.",
@@ -277,6 +278,7 @@ const I18N = {
     "target.delete_failed": "Delete failed: {error}",
     "target.register_failed": "Register failed: {error}",
     "job.update_queued": "Update job queued. job_id={jobId}",
+    "job.update_queued_partial": "Update job queued. job_id={jobId}, skipped active targets={count}",
     "job.prune_queued": "Prune job queued. job_id={jobId}",
     "job.delete_all_confirm": "Delete all job history? (rejected while queued/running jobs exist)",
     "job.delete_all_done": "Deleted {count} job history records.",
@@ -1816,7 +1818,12 @@ async function createUpdateJob() {
       headers: { "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest" },
       body: JSON.stringify({ target_ids: ids }),
     });
-    alert(t("job.update_queued", { jobId: data.job_id }));
+    const skippedCount = Array.isArray(data.skipped_target_ids) ? data.skipped_target_ids.length : 0;
+    if (skippedCount > 0) {
+      alert(t("job.update_queued_partial", { jobId: data.job_id, count: skippedCount }));
+    } else {
+      alert(t("job.update_queued", { jobId: data.job_id }));
+    }
     await reloadAll();
   } catch (err) {
     if (!handleUnauthorized(err)) {

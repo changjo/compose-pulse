@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -597,8 +599,8 @@ func TestComputePullRetryDelayTooManyRequestsClamp(t *testing.T) {
 		outputLines: []string{"Error response from daemon: toomanyrequests: retry-after: 183.761µs, allowed: 44000/minute"},
 	}
 	got := computePullRetryDelay(err, 0, 2)
-	if got != 2*time.Second {
-		t.Fatalf("computePullRetryDelay() = %s, want 2s", got)
+	if got != 15*time.Second {
+		t.Fatalf("computePullRetryDelay() = %s, want 15s", got)
 	}
 
 	err = &commandRunError{
@@ -606,8 +608,146 @@ func TestComputePullRetryDelayTooManyRequestsClamp(t *testing.T) {
 		outputLines: []string{"toomanyrequests: retry-after: 9999s"},
 	}
 	got = computePullRetryDelay(err, 0, 2)
-	if got != 120*time.Second {
-		t.Fatalf("computePullRetryDelay() = %s, want 120s", got)
+	if got != 5*time.Minute {
+		t.Fatalf("computePullRetryDelay() = %s, want 5m", got)
+	}
+}
+
+func TestBuildRegistryRateLimitHint(t *testing.T) {
+	got := buildRegistryRateLimitHint()
+	if !strings.Contains(got, "registry rate limit detected") {
+		t.Fatalf("buildRegistryRateLimitHint() = %q, want generic registry hint", got)
+	}
+}
+
+func TestShouldPushEventOnlyForSuccessAndFailure(t *testing.T) {
+	app := &App{
+		cfg: Config{
+			WebPushEnabled:      true,
+			WebPushVAPIDPublic:  "pub",
+			WebPushVAPIDPrivate: "priv",
+			WebPushSubject:      "mailto:test@example.com",
+		},
+	}
+
+	if !app.shouldPushEvent(DashboardPatchEvent{EventType: eventTypeJobSuccess}) {
+		t.Fatal("expected job success push to be enabled")
+	}
+	if !app.shouldPushEvent(DashboardPatchEvent{EventType: eventTypeJobFailed}) {
+		t.Fatal("expected job failed push to be enabled")
+	}
+
+	for _, eventType := range []string{
+		eventTypeJobQueued,
+		eventTypeJobRunning,
+		eventTypeJobBlocked,
+		eventTypeWebhookReceipt,
+		eventTypeAuthRateLimited,
+	} {
+		if app.shouldPushEvent(DashboardPatchEvent{EventType: eventType}) {
+			t.Fatalf("expected push to be disabled for event_type=%s", eventType)
+		}
+	}
+}
+
+func TestJobPushTargetSummary(t *testing.T) {
+	h := newTestHarness(t, false)
+
+	composeDir := filepath.Join(h.app.cfg.ContainerRoot, "push-target")
+	if err := os.MkdirAll(composeDir, 0o755); err != nil {
+		t.Fatalf("mkdir compose dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(composeDir, "docker-compose.yml"), []byte("services:\n  app:\n    image: lscr.io/linuxserver/qbittorrent:latest\n"), 0o644); err != nil {
+		t.Fatalf("write compose file: %v", err)
+	}
+
+	target, err := h.app.createTarget(context.Background(), createTargetRequest{
+		Name:        "qbittorrent",
+		ComposeDir:  composeDir,
+		ComposeFile: "docker-compose.yml",
+		ImageRepo:   "lscr.io/linuxserver/qbittorrent",
+	})
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	jobID, err := h.app.createJob(context.Background(), jobTypeUpdate, triggerManual, []int64{target.ID})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	got := h.app.jobPushTargetSummary(context.Background(), jobID)
+	want := "qbittorrent (lscr.io/linuxserver/qbittorrent)"
+	if got != want {
+		t.Fatalf("jobPushTargetSummary() = %q, want %q", got, want)
+	}
+}
+
+func TestBuildJobPushBody(t *testing.T) {
+	if got := buildJobPushBody("qbittorrent (lscr.io/linuxserver/qbittorrent)", "job #7 failed"); got != "qbittorrent (lscr.io/linuxserver/qbittorrent)" {
+		t.Fatalf("buildJobPushBody() with summary = %q", got)
+	}
+	if got := buildJobPushBody("", "job #7 failed"); got != "job #7 failed" {
+		t.Fatalf("buildJobPushBody() fallback = %q", got)
+	}
+}
+
+func TestBuildJobPushMessageUpdate(t *testing.T) {
+	title, body, tag, ok := buildJobPushMessage(jobTypeUpdate, eventTypeJobSuccess, 7, "qbittorrent (lscr.io/linuxserver/qbittorrent)")
+	if !ok {
+		t.Fatal("expected update success push message")
+	}
+	if title != "Update succeeded" {
+		t.Fatalf("title = %q, want %q", title, "Update succeeded")
+	}
+	if body != "qbittorrent (lscr.io/linuxserver/qbittorrent)" {
+		t.Fatalf("body = %q, want target summary", body)
+	}
+	if tag != "job-success" {
+		t.Fatalf("tag = %q, want job-success", tag)
+	}
+
+	title, body, tag, ok = buildJobPushMessage(jobTypeUpdate, eventTypeJobFailed, 8, "")
+	if !ok {
+		t.Fatal("expected update failure push message")
+	}
+	if title != "Update failed" {
+		t.Fatalf("title = %q, want %q", title, "Update failed")
+	}
+	if body != "job #8 failed" {
+		t.Fatalf("body = %q, want fallback failure message", body)
+	}
+	if tag != "job-failed" {
+		t.Fatalf("tag = %q, want job-failed", tag)
+	}
+}
+
+func TestBuildJobPushMessagePrune(t *testing.T) {
+	title, body, tag, ok := buildJobPushMessage(jobTypePrune, eventTypeJobSuccess, 9, "")
+	if !ok {
+		t.Fatal("expected prune success push message")
+	}
+	if title != "Prune succeeded" {
+		t.Fatalf("title = %q, want %q", title, "Prune succeeded")
+	}
+	if body != "docker image prune -f completed" {
+		t.Fatalf("body = %q, want prune success body", body)
+	}
+	if tag != "job-success" {
+		t.Fatalf("tag = %q, want job-success", tag)
+	}
+
+	title, body, tag, ok = buildJobPushMessage(jobTypePrune, eventTypeJobFailed, 10, "")
+	if !ok {
+		t.Fatal("expected prune failure push message")
+	}
+	if title != "Prune failed" {
+		t.Fatalf("title = %q, want %q", title, "Prune failed")
+	}
+	if body != "docker image prune -f failed" {
+		t.Fatalf("body = %q, want prune failure body", body)
+	}
+	if tag != "job-failed" {
+		t.Fatalf("tag = %q, want job-failed", tag)
 	}
 }
 

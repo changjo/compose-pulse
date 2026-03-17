@@ -15,6 +15,7 @@ What ComposePulse does:
 - Registers approved compose projects from a fixed root path
 - Runs manual updates with `docker compose pull` and `docker compose up -d`
 - Accepts DIUN webhooks and queues only matching targets for auto update
+- Skips targets that already have queued or running update jobs instead of re-queueing them
 - Streams live job logs and dashboard updates
 - Shows 24h operational metrics and falls back to zero for missing optional telemetry history during upgrades
 - Shows the running app version in the login screen and dashboard header so you can confirm the deployed build quickly
@@ -155,6 +156,7 @@ File roles:
 
 The default Docker Hub compose file uses `changjo/composepulse:latest`, but pinning `COMPOSEPULSE_IMAGE` to a release tag such as `changjo/composepulse:v0.1.0` is safer for production.
 The local build compose file defaults the in-app version label to `dev`; set `COMPOSEPULSE_APP_VERSION` if you want a custom version string in a locally built image.
+If a pull fails with `toomanyrequests`, ComposePulse is hitting a registry rate limit. The app now waits longer before retrying, but repeated update triggers can still exhaust the registry window.
 
 If you are not using `/share/Container`, override both the read-only bind mount and `CONTAINER_ROOT` in your own local override file such as `docker-compose.custom.yml`. Do not commit personal override files to the public repository.
 
@@ -299,6 +301,8 @@ When enabled, the UI provides:
 - device-specific push subscription management
 - push test delivery
 - badge clearing when the app is opened
+- production notifications only for update success and update failure, including the target image summary when available
+- prune jobs use explicit prune success/failure notification text instead of update wording
 
 Notes:
 
@@ -459,6 +463,7 @@ git push origin v0.1.0
 ```
 
 For Docker Hub deployments, use the default [`docker-compose.yml`](./docker-compose.yml). It reads `COMPOSEPULSE_IMAGE` and defaults to `changjo/composepulse:latest`.
+If you see `toomanyrequests` in job logs, treat it as a registry-side rate limit and expect retries or a later rerun rather than an internal queue bug.
 
 Recommended pinned-tag launch:
 

@@ -64,6 +64,7 @@ const (
 	webhookReasonInternalError            = "internal_error"
 	webhookReasonAutoDisabled             = "auto_disabled"
 	webhookReasonCooldownBlocked          = "cooldown_blocked"
+	webhookReasonActiveJobExists          = "active_job_exists"
 	webhookReasonOutsideMaintenanceWindow = "outside_maintenance_window"
 
 	dashboardSectionTargets  = "targets"
@@ -287,6 +288,13 @@ type patchTargetRequest struct {
 
 type createUpdateJobRequest struct {
 	TargetIDs []int64 `json:"target_ids"`
+}
+
+type createUpdateJobResponse struct {
+	JobID            int64   `json:"job_id"`
+	Status           string  `json:"status"`
+	QueuedTargetIDs  []int64 `json:"queued_target_ids,omitempty"`
+	SkippedTargetIDs []int64 `json:"skipped_target_ids,omitempty"`
 }
 
 type createPruneJobRequest struct {
@@ -1432,24 +1440,32 @@ func (a *App) handleCreateUpdateJob(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "no_enabled_targets", "no enabled targets selected")
 		return
 	}
-
-	jobID, err := a.createJob(r.Context(), jobTypeUpdate, triggerManual, targetIDs)
+	jobID, targetIDs, skippedTargetIDs, err := a.createUpdateJobForAvailableTargets(r.Context(), triggerManual, targetIDs)
 	if err != nil {
 		writeAPIErrorFromErr(w, http.StatusInternalServerError, "internal_error", err)
 		return
 	}
-	if err := a.enqueueJob(jobID); err != nil {
-		_ = a.failJob(context.Background(), jobID, "queue full")
+	if jobID == nil {
+		writeAPIError(w, http.StatusConflict, "target_has_active_jobs", "selected targets are already queued or running")
+		return
+	}
+	if err := a.enqueueJob(*jobID); err != nil {
+		_ = a.failJob(context.Background(), *jobID, "queue full")
 		writeAPIErrorFromErr(w, http.StatusServiceUnavailable, "queue_full", err)
 		return
 	}
 	a.emitDashboardEvent(DashboardPatchEvent{
 		EventType: eventTypeJobQueued,
 		Sections:  []string{dashboardSectionJobs, dashboardSectionMetrics},
-		JobID:     &jobID,
+		JobID:     jobID,
 		TargetIDs: targetIDs,
 	})
-	writeJSON(w, http.StatusAccepted, map[string]any{"job_id": jobID, "status": statusQueued})
+	writeJSON(w, http.StatusAccepted, createUpdateJobResponse{
+		JobID:            *jobID,
+		Status:           statusQueued,
+		QueuedTargetIDs:  append([]int64(nil), targetIDs...),
+		SkippedTargetIDs: append([]int64(nil), skippedTargetIDs...),
+	})
 }
 
 func (a *App) handleCreatePruneJob(w http.ResponseWriter, r *http.Request) {
@@ -2183,22 +2199,27 @@ func (a *App) handleDiunWebhook(w http.ResponseWriter, r *http.Request) {
 			queuedIDs = append(queuedIDs, t.ID)
 		}
 	}
-
+	busyIDs := make([]int64, 0, len(queuedIDs))
 	var jobID *int64
 	if len(queuedIDs) > 0 {
-		id, err := a.createJob(r.Context(), jobTypeUpdate, triggerAuto, queuedIDs)
+		newJobID, readyIDs, activeIDs, err := a.createUpdateJobForAvailableTargets(r.Context(), triggerAuto, queuedIDs)
 		if err != nil {
 			recordReceipt(false, http.StatusInternalServerError, webhookReasonInternalError, err.Error(), nil)
 			writeAPIErrorFromErr(w, http.StatusInternalServerError, "internal_error", err)
 			return
 		}
-		if err := a.enqueueJob(id); err != nil {
-			_ = a.failJob(context.Background(), id, "queue full")
+		queuedIDs = readyIDs
+		busyIDs = activeIDs
+		skippedIDs = appendUniqueInt64(skippedIDs, activeIDs...)
+		jobID = newJobID
+	}
+	if jobID != nil {
+		if err := a.enqueueJob(*jobID); err != nil {
+			_ = a.failJob(context.Background(), *jobID, "queue full")
 			recordReceipt(false, http.StatusServiceUnavailable, webhookReasonQueueFull, "queue full", nil)
 			writeAPIErrorFromErr(w, http.StatusServiceUnavailable, "queue_full", err)
 			return
 		}
-		jobID = &id
 		reasonCode = webhookReasonQueued
 		a.emitDashboardEvent(DashboardPatchEvent{
 			EventType:  eventTypeJobQueued,
@@ -2207,6 +2228,9 @@ func (a *App) handleDiunWebhook(w http.ResponseWriter, r *http.Request) {
 			TargetIDs:  append([]int64(nil), queuedIDs...),
 			ReasonCode: webhookReasonQueued,
 		})
+	}
+	if jobID == nil && len(busyIDs) > 0 {
+		reasonCode = webhookReasonActiveJobExists
 	}
 
 	if err := a.recordDiunEvent(r.Context(), imageRepo, tag, digest, matchedIDs, queuedIDs, now); err != nil {
@@ -2377,6 +2401,7 @@ func (a *App) runComposeCommand(ctx context.Context, jobID int64, target Target,
 	attempts := a.cfg.PullRetryMaxAttempts
 	delayStep := time.Duration(a.cfg.PullRetryDelaySec) * time.Second
 	var lastErr error
+	rateLimitHintLogged := false
 	for attempt := 1; attempt <= attempts; attempt++ {
 		if attempt > 1 {
 			delay := computePullRetryDelay(lastErr, delayStep, attempt)
@@ -2396,6 +2421,10 @@ func (a *App) runComposeCommand(ctx context.Context, jobID int64, target Target,
 		}
 		lastErr = err
 		a.logJob(jobID, fmt.Sprintf("pull attempt %d/%d failed: %v", attempt, attempts, err))
+		if !rateLimitHintLogged && isTooManyRequestsError(err) {
+			a.logJob(jobID, buildRegistryRateLimitHint())
+			rateLimitHintLogged = true
+		}
 	}
 	return lastErr
 }
@@ -2482,15 +2511,20 @@ func computePullRetryDelay(lastErr error, baseStep time.Duration, attempt int) t
 	}
 	baseDelay := baseStep * time.Duration(attempt-1)
 	if isTooManyRequestsError(lastErr) {
+		minDelay := 15 * time.Second
 		if parsed, ok := parseRetryAfterDelay(lastErr); ok {
-			return clampDuration(parsed, 2*time.Second, 120*time.Second)
+			return clampDuration(parsed, minDelay, 5*time.Minute)
 		}
 		if baseDelay <= 0 {
-			baseDelay = 2 * time.Second
+			baseDelay = minDelay
 		}
-		return clampDuration(baseDelay, 2*time.Second, 120*time.Second)
+		return clampDuration(baseDelay, minDelay, 5*time.Minute)
 	}
 	return baseDelay
+}
+
+func buildRegistryRateLimitHint() string {
+	return "hint: registry rate limit detected; wait for the registry window to reset or reduce repeated pull triggers."
 }
 
 func isTooManyRequestsError(err error) bool {
@@ -3215,6 +3249,72 @@ func (a *App) filterEnabledTargets(ctx context.Context, requested []int64) ([]in
 	return filtered, nil
 }
 
+func (a *App) createUpdateJobForAvailableTargets(ctx context.Context, trigger string, requested []int64) (*int64, []int64, []int64, error) {
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	defer tx.Rollback()
+
+	seen := map[int64]struct{}{}
+	ready := make([]int64, 0, len(requested))
+	active := make([]int64, 0, len(requested))
+
+	for _, id := range requested {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+
+		var activeRef int
+		err := tx.QueryRowContext(ctx, `
+			SELECT 1
+			FROM jobs j
+			INNER JOIN job_targets jt ON jt.job_id = j.id
+			WHERE jt.target_id = ? AND j.status IN (?, ?)
+			LIMIT 1`,
+			id, statusQueued, statusRunning,
+		).Scan(&activeRef)
+		if errors.Is(err, sql.ErrNoRows) {
+			ready = append(ready, id)
+			continue
+		}
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		active = append(active, id)
+	}
+
+	if len(ready) == 0 {
+		return nil, nil, active, nil
+	}
+
+	now := time.Now().Unix()
+	res, err := tx.ExecContext(ctx,
+		`INSERT INTO jobs (type, trigger, status, created_at) VALUES (?, ?, ?, ?)`,
+		jobTypeUpdate, trigger, statusQueued, now,
+	)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	jobID, err := res.LastInsertId()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	for i, targetID := range ready {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO job_targets (job_id, target_id, position) VALUES (?, ?, ?)`,
+			jobID, targetID, i,
+		); err != nil {
+			return nil, nil, nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, nil, nil, err
+	}
+	return &jobID, ready, active, nil
+}
+
 func (a *App) createJob(ctx context.Context, jobType, trigger string, targetIDs []int64) (int64, error) {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -3643,6 +3743,26 @@ func containsString(items []string, needle string) bool {
 	return false
 }
 
+func appendUniqueInt64(base []int64, values ...int64) []int64 {
+	seen := make(map[int64]struct{}, len(base)+len(values))
+	out := make([]int64, 0, len(base)+len(values))
+	for _, item := range base {
+		if _, exists := seen[item]; exists {
+			continue
+		}
+		seen[item] = struct{}{}
+		out = append(out, item)
+	}
+	for _, item := range values {
+		if _, exists := seen[item]; exists {
+			continue
+		}
+		seen[item] = struct{}{}
+		out = append(out, item)
+	}
+	return out
+}
+
 func insertTargetImageRepos(ctx context.Context, tx *sql.Tx, targetID int64, repos []string, createdAt int64) error {
 	if len(repos) == 0 {
 		return nil
@@ -3895,7 +4015,7 @@ func (a *App) shouldPushEvent(evt DashboardPatchEvent) bool {
 		return false
 	}
 	switch evt.EventType {
-	case eventTypeJobQueued, eventTypeJobRunning, eventTypeJobSuccess, eventTypeJobFailed, eventTypeJobBlocked, eventTypeWebhookReceipt, eventTypeAuthRateLimited:
+	case eventTypeJobSuccess, eventTypeJobFailed:
 		return true
 	default:
 		return false
@@ -3937,15 +4057,11 @@ func (a *App) shouldEmitPushByDedupe(evt DashboardPatchEvent, window time.Durati
 
 func pushDedupeKey(evt DashboardPatchEvent) string {
 	switch evt.EventType {
-	case eventTypeJobQueued, eventTypeJobRunning, eventTypeJobSuccess, eventTypeJobFailed, eventTypeJobBlocked:
+	case eventTypeJobSuccess, eventTypeJobFailed:
 		if evt.JobID != nil && *evt.JobID > 0 {
 			return fmt.Sprintf("job:%s:%d", evt.EventType, *evt.JobID)
 		}
 		return fmt.Sprintf("job:%s", evt.EventType)
-	case eventTypeWebhookReceipt:
-		return fmt.Sprintf("webhook:%s", strings.TrimSpace(evt.ReasonCode))
-	case eventTypeAuthRateLimited:
-		return eventTypeAuthRateLimited
 	default:
 		return ""
 	}
@@ -3972,44 +4088,82 @@ func (a *App) sendPushForEvent(ctx context.Context, evt DashboardPatchEvent) err
 		URL:       "/",
 		EventType: evt.EventType,
 	}
-	switch evt.EventType {
-	case eventTypeJobQueued:
-		msg.Title = "Update job queued"
-		msg.Body = fmt.Sprintf("job #%d queued", derefInt64(evt.JobID))
-		msg.Tag = "job-queued"
-	case eventTypeJobRunning:
-		msg.Title = "Update job running"
-		msg.Body = fmt.Sprintf("job #%d started", derefInt64(evt.JobID))
-		msg.Tag = "job-running"
-	case eventTypeJobSuccess:
-		msg.Title = "Update job succeeded"
-		msg.Body = fmt.Sprintf("job #%d completed successfully", derefInt64(evt.JobID))
-		msg.Tag = "job-success"
-	case eventTypeJobFailed:
-		msg.Title = "Update job failed"
-		msg.Body = fmt.Sprintf("job #%d failed", derefInt64(evt.JobID))
-		msg.Tag = "job-failed"
-	case eventTypeJobBlocked:
-		msg.Title = "Update job blocked"
-		msg.Body = fmt.Sprintf("job #%d blocked remaining targets", derefInt64(evt.JobID))
-		msg.Tag = "job-blocked"
-	case eventTypeWebhookReceipt:
-		msg.Title = "DIUN webhook received"
-		reason := strings.TrimSpace(evt.ReasonCode)
-		if reason == "" {
-			reason = "unknown"
-		}
-		msg.Body = "reason=" + reason
-		msg.Tag = "webhook-" + reason
-	case eventTypeAuthRateLimited:
-		msg.Title = "Login rate limited"
-		msg.Body = "Too many login attempts detected."
-		msg.Tag = "auth-rate-limited"
-	default:
+	jobType, err := a.jobType(ctx, derefInt64(evt.JobID))
+	if err != nil {
+		return err
+	}
+	targetSummary := a.jobPushTargetSummary(ctx, derefInt64(evt.JobID))
+	title, body, tag, ok := buildJobPushMessage(jobType, evt.EventType, derefInt64(evt.JobID), targetSummary)
+	if !ok {
 		return nil
 	}
-	_, _, err := a.sendPushNotification(ctx, msg)
+	msg.Title = title
+	msg.Body = body
+	msg.Tag = tag
+	_, _, err = a.sendPushNotification(ctx, msg)
 	return err
+}
+
+func (a *App) jobPushTargetSummary(ctx context.Context, jobID int64) string {
+	if jobID <= 0 {
+		return ""
+	}
+	targetIDs, err := a.jobTargetIDs(ctx, jobID)
+	if err != nil || len(targetIDs) == 0 {
+		return ""
+	}
+
+	items := make([]string, 0, len(targetIDs))
+	for _, targetID := range targetIDs {
+		target, err := a.getTarget(ctx, targetID)
+		if err != nil {
+			continue
+		}
+		repo := strings.TrimSpace(target.ImageRepo)
+		if len(target.ImageRepos) > 0 {
+			repo = strings.TrimSpace(target.ImageRepos[0])
+		}
+		switch {
+		case target.Name != "" && repo != "":
+			items = append(items, fmt.Sprintf("%s (%s)", target.Name, repo))
+		case repo != "":
+			items = append(items, repo)
+		case target.Name != "":
+			items = append(items, target.Name)
+		}
+	}
+	if len(items) == 0 {
+		return ""
+	}
+	if len(items) == 1 {
+		return items[0]
+	}
+	return fmt.Sprintf("%s +%d more", items[0], len(items)-1)
+}
+
+func buildJobPushBody(targetSummary, fallback string) string {
+	summary := strings.TrimSpace(targetSummary)
+	if summary == "" {
+		return fallback
+	}
+	return summary
+}
+
+func buildJobPushMessage(jobType, eventType string, jobID int64, targetSummary string) (string, string, string, bool) {
+	switch eventType {
+	case eventTypeJobSuccess:
+		if jobType == jobTypePrune {
+			return "Prune succeeded", "docker image prune -f completed", "job-success", true
+		}
+		return "Update succeeded", buildJobPushBody(targetSummary, fmt.Sprintf("job #%d completed successfully", jobID)), "job-success", true
+	case eventTypeJobFailed:
+		if jobType == jobTypePrune {
+			return "Prune failed", "docker image prune -f failed", "job-failed", true
+		}
+		return "Update failed", buildJobPushBody(targetSummary, fmt.Sprintf("job #%d failed", jobID)), "job-failed", true
+	default:
+		return "", "", "", false
+	}
 }
 
 func (a *App) sendPushNotification(ctx context.Context, msg pushMessage) (int, int, error) {

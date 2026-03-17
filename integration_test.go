@@ -1253,7 +1253,7 @@ func TestIntegrationUpdateJobPullRetryTooManyRequests(t *testing.T) {
 	}
 	jobID := int64(queuedResp["job_id"].(float64))
 
-	deadline := time.Now().Add(12 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		resp, raw = doJSONRequest(t, h.client, http.MethodGet, h.server.URL+"/api/jobs?limit=20", nil, nil)
 		if resp.StatusCode != http.StatusOK {
@@ -1275,14 +1275,20 @@ func TestIntegrationUpdateJobPullRetryTooManyRequests(t *testing.T) {
 					t.Fatalf("get job logs: %v", err)
 				}
 				foundRetryDelayLog := false
+				foundHintLog := false
 				for _, line := range logs {
-					if strings.Contains(line, "retrying pull attempt 2/3 after 2s") {
+					if strings.Contains(line, "retrying pull attempt 2/3 after 15s") {
 						foundRetryDelayLog = true
-						break
+					}
+					if strings.Contains(line, "registry rate limit detected") {
+						foundHintLog = true
 					}
 				}
 				if !foundRetryDelayLog {
 					t.Fatalf("expected retry delay log after toomanyrequests; logs=%v", logs)
+				}
+				if !foundHintLog {
+					t.Fatalf("expected registry rate-limit hint log; logs=%v", logs)
 				}
 				return
 			}
@@ -1293,6 +1299,150 @@ func TestIntegrationUpdateJobPullRetryTooManyRequests(t *testing.T) {
 		time.Sleep(150 * time.Millisecond)
 	}
 	t.Fatalf("job %d did not reach success state with retry", jobID)
+}
+
+func TestIntegrationUpdateJobSkipsTargetsWithActiveJobs(t *testing.T) {
+	h := newTestHarness(t, true)
+	loginAsAdmin(t, h)
+
+	mustCreateTarget := func(name, image string) Target {
+		t.Helper()
+		composeDir := filepath.Join(h.app.cfg.ContainerRoot, name)
+		if err := os.MkdirAll(composeDir, 0o755); err != nil {
+			t.Fatalf("mkdir compose dir: %v", err)
+		}
+		composeFile := filepath.Join(composeDir, "docker-compose.yml")
+		if err := os.WriteFile(composeFile, []byte("services:\n  app:\n    image: "+image+":latest\n"), 0o644); err != nil {
+			t.Fatalf("write compose file: %v", err)
+		}
+		resp, raw := doJSONRequest(t, h.client, http.MethodPost, h.server.URL+"/api/targets", map[string]any{
+			"name":         name,
+			"compose_dir":  composeDir,
+			"compose_file": "docker-compose.yml",
+			"image_repo":   image,
+		}, nil)
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("create target status = %d, want %d body=%s", resp.StatusCode, http.StatusCreated, string(raw))
+		}
+		var target Target
+		if err := json.Unmarshal(raw, &target); err != nil {
+			t.Fatalf("unmarshal target: %v", err)
+		}
+		return target
+	}
+
+	busyTarget := mustCreateTarget("busy-app", "ghcr.io/acme/busy-app")
+	readyTarget := mustCreateTarget("ready-app", "ghcr.io/acme/ready-app")
+
+	now := time.Now().Unix()
+	res, err := h.app.db.ExecContext(context.Background(), `
+		INSERT INTO jobs (type, trigger, status, created_at)
+		VALUES (?, ?, ?, ?)`,
+		jobTypeUpdate, triggerManual, statusQueued, now,
+	)
+	if err != nil {
+		t.Fatalf("insert busy job: %v", err)
+	}
+	activeJobID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("busy job last insert id: %v", err)
+	}
+	if _, err := h.app.db.ExecContext(context.Background(),
+		`INSERT INTO job_targets (job_id, target_id, position) VALUES (?, ?, 0)`,
+		activeJobID, busyTarget.ID,
+	); err != nil {
+		t.Fatalf("insert busy job target: %v", err)
+	}
+
+	resp, raw := doJSONRequest(t, h.client, http.MethodPost, h.server.URL+"/api/jobs/update", map[string]any{
+		"target_ids": []int64{busyTarget.ID, readyTarget.ID},
+	}, nil)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create update job status = %d, want %d body=%s", resp.StatusCode, http.StatusAccepted, string(raw))
+	}
+
+	var queuedResp createUpdateJobResponse
+	if err := json.Unmarshal(raw, &queuedResp); err != nil {
+		t.Fatalf("unmarshal queue response: %v", err)
+	}
+	if queuedResp.Status != statusQueued {
+		t.Fatalf("queued status = %q, want %q", queuedResp.Status, statusQueued)
+	}
+	if len(queuedResp.QueuedTargetIDs) != 1 || queuedResp.QueuedTargetIDs[0] != readyTarget.ID {
+		t.Fatalf("queued_target_ids = %+v, want [%d]", queuedResp.QueuedTargetIDs, readyTarget.ID)
+	}
+	if len(queuedResp.SkippedTargetIDs) != 1 || queuedResp.SkippedTargetIDs[0] != busyTarget.ID {
+		t.Fatalf("skipped_target_ids = %+v, want [%d]", queuedResp.SkippedTargetIDs, busyTarget.ID)
+	}
+
+	targetIDs, err := h.app.jobTargetIDs(context.Background(), queuedResp.JobID)
+	if err != nil {
+		t.Fatalf("jobTargetIDs: %v", err)
+	}
+	if len(targetIDs) != 1 || targetIDs[0] != readyTarget.ID {
+		t.Fatalf("job target ids = %+v, want [%d]", targetIDs, readyTarget.ID)
+	}
+}
+
+func TestIntegrationUpdateJobRejectsWhenAllTargetsHaveActiveJobs(t *testing.T) {
+	h := newTestHarness(t, true)
+	loginAsAdmin(t, h)
+
+	composeDir := filepath.Join(h.app.cfg.ContainerRoot, "busy-only-app")
+	if err := os.MkdirAll(composeDir, 0o755); err != nil {
+		t.Fatalf("mkdir compose dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(composeDir, "docker-compose.yml"), []byte("services:\n  app:\n    image: ghcr.io/acme/busy-only:latest\n"), 0o644); err != nil {
+		t.Fatalf("write compose file: %v", err)
+	}
+
+	resp, raw := doJSONRequest(t, h.client, http.MethodPost, h.server.URL+"/api/targets", map[string]any{
+		"name":         "busy-only-app",
+		"compose_dir":  composeDir,
+		"compose_file": "docker-compose.yml",
+		"image_repo":   "ghcr.io/acme/busy-only",
+	}, nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create target status = %d, want %d body=%s", resp.StatusCode, http.StatusCreated, string(raw))
+	}
+	var target Target
+	if err := json.Unmarshal(raw, &target); err != nil {
+		t.Fatalf("unmarshal target: %v", err)
+	}
+
+	now := time.Now().Unix()
+	res, err := h.app.db.ExecContext(context.Background(), `
+		INSERT INTO jobs (type, trigger, status, created_at)
+		VALUES (?, ?, ?, ?)`,
+		jobTypeUpdate, triggerManual, statusRunning, now,
+	)
+	if err != nil {
+		t.Fatalf("insert busy job: %v", err)
+	}
+	activeJobID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("busy job last insert id: %v", err)
+	}
+	if _, err := h.app.db.ExecContext(context.Background(),
+		`INSERT INTO job_targets (job_id, target_id, position) VALUES (?, ?, 0)`,
+		activeJobID, target.ID,
+	); err != nil {
+		t.Fatalf("insert busy job target: %v", err)
+	}
+
+	resp, raw = doJSONRequest(t, h.client, http.MethodPost, h.server.URL+"/api/jobs/update", map[string]any{
+		"target_ids": []int64{target.ID},
+	}, nil)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("update busy target status = %d, want %d body=%s", resp.StatusCode, http.StatusConflict, string(raw))
+	}
+	var apiErr apiErrorResponse
+	if err := json.Unmarshal(raw, &apiErr); err != nil {
+		t.Fatalf("unmarshal api error: %v", err)
+	}
+	if apiErr.Code != "target_has_active_jobs" {
+		t.Fatalf("apiErr.Code = %q, want target_has_active_jobs", apiErr.Code)
+	}
 }
 
 func TestIntegrationWebhookSecretMismatchHandling(t *testing.T) {
@@ -1662,6 +1812,110 @@ services:
 	}
 	if webhookResp.QueuedCount != 1 {
 		t.Fatalf("queued_count = %d, want 1", webhookResp.QueuedCount)
+	}
+}
+
+func TestIntegrationWebhookSkipsTargetsWithActiveJobs(t *testing.T) {
+	h := newTestHarness(t, true)
+	loginAsAdmin(t, h)
+
+	composeDir := filepath.Join(h.app.cfg.ContainerRoot, "busy-auto-app")
+	if err := os.MkdirAll(composeDir, 0o755); err != nil {
+		t.Fatalf("mkdir compose dir: %v", err)
+	}
+	composeFile := filepath.Join(composeDir, "docker-compose.yml")
+	if err := os.WriteFile(composeFile, []byte(`
+services:
+  app:
+    image: ghcr.io/acme/busy-auto:latest
+`), 0o644); err != nil {
+		t.Fatalf("write compose file: %v", err)
+	}
+
+	resp, raw := doJSONRequest(t, h.client, http.MethodPost, h.server.URL+"/api/targets", map[string]any{
+		"name":         "busy-auto-app",
+		"compose_dir":  composeDir,
+		"compose_file": "docker-compose.yml",
+		"image_repo":   "ghcr.io/acme/busy-auto",
+	}, nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create target status = %d, want %d body=%s", resp.StatusCode, http.StatusCreated, string(raw))
+	}
+	var created Target
+	if err := json.Unmarshal(raw, &created); err != nil {
+		t.Fatalf("unmarshal target: %v", err)
+	}
+
+	resp, raw = doJSONRequest(t, h.client, http.MethodPatch, h.server.URL+"/api/targets/"+strconv.FormatInt(created.ID, 10), map[string]any{
+		"auto_update_enabled": true,
+	}, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("enable auto update status = %d, want %d body=%s", resp.StatusCode, http.StatusOK, string(raw))
+	}
+
+	now := time.Now().Unix()
+	res, err := h.app.db.ExecContext(context.Background(), `
+		INSERT INTO jobs (type, trigger, status, created_at)
+		VALUES (?, ?, ?, ?)`,
+		jobTypeUpdate, triggerManual, statusRunning, now,
+	)
+	if err != nil {
+		t.Fatalf("insert busy job: %v", err)
+	}
+	activeJobID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("busy job last insert id: %v", err)
+	}
+	if _, err := h.app.db.ExecContext(context.Background(),
+		`INSERT INTO job_targets (job_id, target_id, position) VALUES (?, ?, 0)`,
+		activeJobID, created.ID,
+	); err != nil {
+		t.Fatalf("insert busy job target: %v", err)
+	}
+
+	payload := map[string]any{
+		"entry": map[string]any{
+			"image": map[string]any{
+				"name": "ghcr.io/acme/busy-auto:latest",
+			},
+		},
+	}
+	resp, raw = doJSONRequest(t, h.client, http.MethodPost, h.server.URL+"/api/diun/webhook", payload, map[string]string{
+		"X-DIUN-SECRET": h.app.webhookSecret,
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("webhook status = %d, want %d body=%s", resp.StatusCode, http.StatusOK, string(raw))
+	}
+
+	var webhookResp diunWebhookResponse
+	if err := json.Unmarshal(raw, &webhookResp); err != nil {
+		t.Fatalf("unmarshal webhook response: %v", err)
+	}
+	if webhookResp.MatchedCount != 1 {
+		t.Fatalf("matched_count = %d, want 1", webhookResp.MatchedCount)
+	}
+	if webhookResp.QueuedCount != 0 {
+		t.Fatalf("queued_count = %d, want 0", webhookResp.QueuedCount)
+	}
+	if len(webhookResp.SkippedIDs) != 1 || webhookResp.SkippedIDs[0] != created.ID {
+		t.Fatalf("skipped_ids = %+v, want [%d]", webhookResp.SkippedIDs, created.ID)
+	}
+
+	resp, raw = doJSONRequest(t, h.client, http.MethodGet, h.server.URL+"/api/diun/receipts?limit=1", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("receipts status = %d, want %d body=%s", resp.StatusCode, http.StatusOK, string(raw))
+	}
+	var receipts struct {
+		Receipts []WebhookReceiptSummary `json:"receipts"`
+	}
+	if err := json.Unmarshal(raw, &receipts); err != nil {
+		t.Fatalf("unmarshal receipts: %v", err)
+	}
+	if len(receipts.Receipts) == 0 {
+		t.Fatal("expected at least one receipt")
+	}
+	if receipts.Receipts[0].ReasonCode != webhookReasonActiveJobExists {
+		t.Fatalf("receipt reason_code = %q, want %q", receipts.Receipts[0].ReasonCode, webhookReasonActiveJobExists)
 	}
 }
 

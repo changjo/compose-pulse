@@ -108,6 +108,10 @@ Implemented MVP for the planned ComposePulse web app:
 - GitHub Actions release automation added: CI now runs prepublish checks plus Dockerized Go tests on `main`/PRs, and tag pushes matching `v*` now publish multi-arch Docker Hub images (`linux/amd64`, `linux/arm64`) and create GitHub Releases automatically; Docker Hub config is documented in the README and open-source release checklist
 - Prepublish release guard fix: `scripts/prepublish_check.sh` no longer flags `.env.example` as a tracked sensitive file, so the new GitHub Actions CI/release workflow can pass with the intended public sample env file committed
 - Compose file naming cleanup: the public default is now `docker-compose.yml` for Docker Hub image deployments, while local source builds moved to `docker-compose.build.yml`; the README and sample env now reflect the new default path
+- Registry rate-limit handling improved: pull retries now wait at least 15 seconds for `toomanyrequests`, and job logs now emit a generic registry-rate-limit hint instead of treating it like an internal queue problem
+- Active-job dedupe added: manual updates now skip targets already queued/running and return skipped target IDs, and DIUN auto-update now records `active_job_exists` instead of re-queueing the same target while an update is already active
+- Push noise reduction: automatic Web Push notifications now fire only for update success/failure, and the notification body shows the target name plus image repo summary when available
+- Push wording refinement: prune jobs now send `Prune succeeded` / `Prune failed` notifications so they are clearly distinguishable from update results
 - In-app version visibility added: the login screen and dashboard header now show the embedded app version, release builds inject the Git tag through Docker `APP_VERSION`, and local source builds can override the default `dev` label with `COMPOSEPULSE_APP_VERSION`
 
 Key files:
